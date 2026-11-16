@@ -73,8 +73,8 @@ pub(crate) fn validate(input: Input<'_>) -> Result<ValidatedInput<'_>, Error> {
             if let Some(length) = &declaration.length {
                 validate_expression(&length.node, index, &declarations)?;
             }
-            validate_expression(&constraint.lower.node, index, &declarations)?;
-            validate_expression(&constraint.upper.node, index, &declarations)?;
+            validate_expression(&constraint.range.lower.node, index, &declarations)?;
+            validate_expression(&constraint.range.upper.node, index, &declarations)?;
             variables.push(Variable {
                 declaration,
                 constraint,

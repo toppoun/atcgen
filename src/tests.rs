@@ -1,46 +1,48 @@
+use std::collections::BTreeSet;
+
 use crate::generate;
 
 const EXPRESSION_EXAMPLE: &str = "input {
     N M
-    A[1..(N*M)]
-    B[1..M]
+    A[N*M]
+    B[M]
 }
 
 constraints {
-    N in 1..10
+    N in 2..=10
     M in 1..N
-    A[*] in -(N*M)..(N*M)
-    B[*] in -100..100
+    A[*] in -(N*M)..=(N*M)
+    B[*] in -100..=100
 }
 ";
 
 #[test]
 fn generates_a_scalar() {
-    let source = "input {\n    N\n}\nconstraints {\n    N in 7..7\n}\n";
-    assert_eq!(generate(source, 42).unwrap(), "7\n");
+    let source = dsl("N", "N in 5..=5");
+    assert_eq!(generate(&source, 42).unwrap(), "5\n");
 }
 
 #[test]
 fn generates_multiple_variables_on_one_line() {
-    let source = "input {\n    N M\n}\nconstraints {\n    M in N..N\n    N in 3..3\n}\n";
+    let source = "input {\n    N M\n}\nconstraints {\n    M in N..=N\n    N in 3..=3\n}\n";
     assert_eq!(generate(source, 42).unwrap(), "3 3\n");
 }
 
 #[test]
 fn generates_an_array_with_literal_length() {
-    let source = "input {\n    A[1..3]\n}\nconstraints {\n    A[*] in 5..5\n}\n";
+    let source = "input {\n    A[3]\n}\nconstraints {\n    A[*] in 5..=5\n}\n";
     assert_eq!(generate(source, 42).unwrap(), "5 5 5\n");
 }
 
 #[test]
 fn uses_a_scalar_as_an_array_length() {
-    let source = "input {\n    N A[1..N]\n}\nconstraints {\n    N in 3..3\n    A[*] in N..N\n}\n";
+    let source = "input {\n    N A[N]\n}\nconstraints {\n    N in 3..=3\n    A[*] in N..=N\n}\n";
     assert_eq!(generate(source, 42).unwrap(), "3 3 3 3\n");
 }
 
 #[test]
 fn samples_both_ends_of_a_negative_range() {
-    let source = "input {\n    N\n}\nconstraints {\n    N in -3..-2\n}\n";
+    let source = "input {\n    N\n}\nconstraints {\n    N in -3..=-2\n}\n";
     let values: Vec<_> = (0..16)
         .map(|seed| generate(source, seed).unwrap())
         .collect();
@@ -55,30 +57,50 @@ fn samples_both_ends_of_a_negative_range() {
 
 #[test]
 fn preserves_mvp_output_for_the_same_seed() {
-    let source = "input {\n    N M\n    A[1..N]\n    B[1..M]\n}\n\nconstraints {\n    N in 1..10\n    M in 1..10\n    A[*] in 1..100\n    B[*] in -100..100\n}\n";
+    let source = "input {\n    N M\n    A[N]\n    B[M]\n}\n\nconstraints {\n    N in 1..=10\n    M in 1..=10\n    A[*] in 1..=100\n    B[*] in -100..=100\n}\n";
     let expected = "4 2\n59 65 51 63\n-75 -38\n";
     assert_eq!(generate(source, 42).unwrap(), expected);
     assert_ne!(generate(source, 43).unwrap(), expected);
 }
 
 #[test]
+fn preserves_phase_two_output_for_equivalent_ranges() {
+    let source = dsl(
+        "N M\nA[N*M]\nB[M]",
+        "N in 1..=10\nM in 1..=N\nA[*] in -(N*M)..=(N*M)\nB[*] in -100..=100",
+    );
+    let expected = "4 4\n8 -4 -3 -7 -9 -14 -6 16 -14 -12 -8 -12 16 -11 7 -7\n2 71 92 9\n";
+    assert_eq!(generate(&source, 42).unwrap(), expected);
+}
+
+#[test]
+fn distinguishes_exclusive_and_inclusive_endpoints() {
+    for (range, last) in [("1..10", 9), ("1..=10", 10)] {
+        let source = dsl("A[256]", &format!("A[*] in {range}"));
+        let output = generate(&source, 42).unwrap();
+        let sampled: BTreeSet<_> = parse_integers(&output).into_iter().collect();
+        assert_eq!(sampled, (1..=last).collect(), "{range}");
+    }
+}
+
+#[test]
 fn emits_lf_with_no_extra_spaces_or_lines() {
-    let source = "input {\r\n  N M\r\n\r\n  A[1..2]\r\n}\r\n\r\nconstraints {\r\n  N in 1..1\r\n  M in 2..2\r\n  A[*] in 3..3\r\n}";
+    let source = "input {\r\n  N M\r\n\r\n  A[2]\r\n}\r\n\r\nconstraints {\r\n  N in 1..=1\r\n  M in 2..=2\r\n  A[*] in 3..=3\r\n}";
     assert_eq!(generate(source, 42).unwrap().as_bytes(), b"1 2\n3 3\n");
 }
 
 #[test]
 fn reports_syntax_errors_with_a_line_and_column() {
-    let source = "input {\n  A[1..]\n}\nconstraints {\n}\n";
+    let source = "input {\n  A[]\n}\nconstraints {\n}\n";
     assert_eq!(
         generate(source, 42).unwrap_err().to_string(),
-        "2:8: expected an integer, scalar variable or `(`"
+        "2:5: expected an integer, scalar variable or `(`"
     );
 }
 
 #[test]
 fn generated_values_meet_their_constraints() {
-    let source = "input {\n    N L U\n    A[1..N]\n}\nconstraints {\n    N in 1..10\n    L in -100..-1\n    U in L..100\n    A[*] in L..U\n}\n";
+    let source = "input {\n    N L U\n    A[N]\n}\nconstraints {\n    N in 1..=10\n    L in -100..=-1\n    U in L..=100\n    A[*] in L..=U\n}\n";
     for seed in 0..64 {
         let output = generate(source, seed).unwrap();
         let mut lines = output.lines();
@@ -106,11 +128,9 @@ fn generated_values_meet_their_constraints() {
 #[test]
 fn rejects_unsupported_and_malformed_syntax() {
     for (row, rule, error) in [
-        ("A[0..3]", "A[*] in 1..1", "array indices must start at 1"),
-        ("A[1..2][1..2]", "A[*] in 1..1", "expected whitespace"),
-        ("A[1..2]B", "A[*] in 1..1", "expected whitespace"),
-        ("A[1..2]", "A[1] in 1..1", "expected `*`"),
-        ("N", "N in 1...2", "expected an integer"),
+        ("A[2][2]", "A[*] in 1..=1", "expected whitespace"),
+        ("A[2]B", "A[*] in 1..=1", "expected whitespace"),
+        ("A[2]", "A[1] in 1..=1", "expected `*`"),
         ("N", "N in 1..2 sorted", "expected end of line"),
         ("N", "N in 0..9223372036854775808", "outside the i64 range"),
     ] {
@@ -119,24 +139,46 @@ fn rejects_unsupported_and_malformed_syntax() {
 }
 
 #[test]
+fn diagnoses_malformed_range_operators() {
+    for (rule, expected) in [
+        ("N in 1...2", "5:7: invalid range operator `...`"),
+        ("N in 1..==2", "5:7: invalid range operator `..==`"),
+        ("N in 1 2", "5:8: expected range operator `..` or `..=`"),
+    ] {
+        assert_dsl_error("N", rule, expected);
+    }
+}
+
+#[test]
+fn rejects_legacy_array_range_notation() {
+    for row in ["A[1..N]", "A[1..=N]"] {
+        assert_dsl_error(
+            row,
+            "A[*] in 1..=1",
+            "2:4: expected an array length expression",
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_declarations_and_constraints() {
     for (row, rules, error) in [
-        ("N N", "N in 1..1", "duplicate declaration"),
-        ("N", "N in 1..1\nN in 2..2", "duplicate constraint"),
+        ("N N", "N in 1..=1", "duplicate declaration"),
+        ("N", "N in 1..=1\nN in 2..=2", "duplicate constraint"),
         ("N", "", "missing constraint"),
-        ("N", "M in 1..1", "undefined variable `M`"),
-        ("N", "N in M..1", "undefined variable `M`"),
-        ("A[1..N]", "A[*] in 1..1", "undefined variable `N`"),
-        ("N M", "N in 1..M\nM in 1..1", "`M` is not available"),
+        ("N", "M in 1..=1", "undefined variable `M`"),
+        ("N", "N in M..=1", "undefined variable `M`"),
+        ("A[N]", "A[*] in 1..=1", "undefined variable `N`"),
+        ("N M", "N in 1..M\nM in 1..=1", "`M` is not available"),
         (
-            "A[1..N] N",
-            "A[*] in 1..1\nN in 1..1",
+            "A[N] N",
+            "A[*] in 1..=1\nN in 1..=1",
             "`N` is not available",
         ),
-        ("N", "N in N..1", "`N` is not available"),
-        ("A[1..1] N", "A[*] in 1..1\nN in 1..A", "expected a scalar"),
-        ("A[1..1]", "A in 1..1", "use `A[*]`"),
-        ("N", "N[*] in 1..1", "cannot be indexed"),
+        ("N", "N in N..=1", "`N` is not available"),
+        ("A[1] N", "A[*] in 1..=1\nN in 1..A", "expected a scalar"),
+        ("A[1]", "A in 1..=1", "use `A[*]`"),
+        ("N", "N[*] in 1..=1", "cannot be indexed"),
     ] {
         assert_dsl_error(row, rules, error);
     }
@@ -144,12 +186,14 @@ fn rejects_invalid_declarations_and_constraints() {
 
 #[test]
 fn rejects_invalid_bounds_and_lengths_at_generation() {
-    assert_dsl_error("N", "N in 2..1", "invalid range");
-    assert_dsl_error("N M", "N in 2..2\nM in N..1", "invalid range");
-    assert_dsl_error("A[1..0]", "A[*] in 1..1", "invalid array length 0");
+    for range in ["1..1", "2..1", "6..=5"] {
+        assert_dsl_error("N", &format!("N in {range}"), "invalid range");
+    }
+    assert_dsl_error("N M", "N in 2..=2\nM in N..1", "invalid range");
+    assert_dsl_error("A[0]", "A[*] in 1..=1", "invalid array length 0");
     assert_dsl_error(
-        "N A[1..N]",
-        "N in -1..-1\nA[*] in 0..0",
+        "N A[N]",
+        "N in -1..=-1\nA[*] in 0..=0",
         "invalid array length -1",
     );
 }
@@ -157,32 +201,58 @@ fn rejects_invalid_bounds_and_lengths_at_generation() {
 #[test]
 fn enforces_integer_and_output_limits() {
     assert_dsl_error(
-        "A[1..9223372036854775807]",
-        "A[*] in 0..0",
+        "A[9223372036854775807]",
+        "A[*] in 0..=0",
         "integer limit exceeded",
     );
     assert_dsl_error(
-        "N A[1..1000000]",
-        "N in 1..1\nA[*] in 0..0",
+        "N A[1000000]",
+        "N in 1..=1\nA[*] in 0..=0",
         "integer limit exceeded",
     );
     assert_dsl_error(
-        "A[1..500000]",
-        "A[*] in -9223372036854775808..-9223372036854775808",
+        "A[500000]",
+        "A[*] in -9223372036854775808..=-9223372036854775808",
         "output size limit exceeded",
     );
 }
 
 #[test]
 fn samples_the_full_signed_integer_range() {
-    let source =
-        "input {\n    N\n}\nconstraints {\n    N in -9223372036854775808..9223372036854775807\n}\n";
+    let source = "input {\n    N\n}\nconstraints {\n    N in -9223372036854775808..=9223372036854775807\n}\n";
     assert_eq!(generate(source, 42).unwrap(), "4456085495900499605\n");
 }
 
 #[test]
+fn safely_samples_ranges_at_signed_boundaries() {
+    let min = i64::MIN;
+    let max = i64::MAX;
+    for (range, value) in [
+        (format!("{min}..={min}"), min),
+        (format!("{min}..{}", min + 1), min),
+        (format!("{max}..={max}"), max),
+        (format!("{}..{max}", max - 1), max - 1),
+    ] {
+        let source = dsl("N", &format!("N in {range}"));
+        assert_eq!(
+            generate(&source, 42).unwrap(),
+            format!("{value}\n"),
+            "{range}"
+        );
+    }
+    assert_dsl_error("N", &format!("N in {min}..{min}"), "invalid range");
+
+    let half_open = dsl("A[32]", &format!("A[*] in {min}..{max}"));
+    let closed = dsl("A[32]", &format!("A[*] in {min}..={}", max - 1));
+    assert_eq!(
+        generate(&half_open, 42).unwrap(),
+        generate(&closed, 42).unwrap()
+    );
+}
+
+#[test]
 fn reproduces_sampling_after_rejecting_a_random_word() {
-    let source = "input {\n    N\n}\nconstraints {\n    N in -9223372036854775808..0\n}\n";
+    let source = "input {\n    N\n}\nconstraints {\n    N in -9223372036854775808..=0\n}\n";
     assert_eq!(generate(source, 3).unwrap(), "-5528608851982440056\n");
 }
 
@@ -227,14 +297,20 @@ fn evaluates_unary_operators() {
 
 #[test]
 fn evaluates_multiple_scalar_references_in_generation_order() {
-    let source = dsl("N M K", "K in +(N+M)..(M*2-N)\nM in 6..6\nN in 3..3");
+    let source = dsl("N M K", "K in +(N+M)..=(M*2-N)\nM in 6..=6\nN in 3..=3");
     assert_eq!(generate(&source, 42).unwrap(), "3 6 9\n");
 }
 
 #[test]
 fn generates_an_array_of_length_n_minus_one() {
-    let source = dsl("N A[1..N-1]", "A[*] in 9..9\nN in 4..4");
+    let source = dsl("N A[N-1]", "A[*] in 9..=9\nN in 4..=4");
     assert_eq!(generate(&source, 42).unwrap(), "4 9 9 9\n");
+}
+
+#[test]
+fn generates_an_array_using_a_parenthesized_length_expression() {
+    let source = dsl("N M\nA[(N+M)*2]", "N in 1..=1\nM in 2..=2\nA[*] in 7..=7");
+    assert_eq!(generate(&source, 42).unwrap(), "1 2\n7 7 7 7 7 7\n");
 }
 
 #[test]
@@ -246,8 +322,8 @@ fn generates_product_length_and_dynamic_bounds() {
         let [n, m] = header[..] else {
             panic!("expected two scalars");
         };
-        assert!((1..=10).contains(&n));
-        assert!((1..=n).contains(&m));
+        assert!((2..=10).contains(&n));
+        assert!((1..n).contains(&m));
 
         let product = n * m;
         let a = parse_integers(lines.next().unwrap());
@@ -262,7 +338,7 @@ fn generates_product_length_and_dynamic_bounds() {
 
 #[test]
 fn expressions_preserve_reproducibility() {
-    let expected = "4 4\n8 -4 -3 -7 -9 -14 -6 16 -14 -12 -8 -12 16 -11 7 -7\n2 71 92 9\n";
+    let expected = "3 2\n4 -3 1 1 4 6\n-45 25\n";
     assert_eq!(generate(EXPRESSION_EXAMPLE, 42).unwrap(), expected);
     assert_eq!(generate(EXPRESSION_EXAMPLE, 42).unwrap(), expected);
     assert_ne!(generate(EXPRESSION_EXAMPLE, 43).unwrap(), expected);
@@ -270,12 +346,12 @@ fn expressions_preserve_reproducibility() {
 
 #[test]
 fn diagnoses_arithmetic_errors_at_the_operator() {
-    let source = dsl("    N\n    A[1..(12/(N-2))]", "N in 2..2\nA[*] in 1..1");
+    let source = dsl("    N\n    A[(12/(N-2))]", "N in 2..=2\nA[*] in 1..=1");
     assert_eq!(
         generate(&source, 42).unwrap_err().to_string(),
-        "3:13: division by zero in expression `(12/(N-2))`"
+        "3:10: division by zero in expression `(12/(N-2))`"
     );
-    assert_dsl_error("N M", "N in 1..1\nM in 0..10%(N-1)", "remainder by zero");
+    assert_dsl_error("N M", "N in 1..=1\nM in 0..10%(N-1)", "remainder by zero");
 }
 
 #[test]
@@ -292,8 +368,22 @@ fn detects_overflow_in_each_arithmetic_operation() {
     }
     assert_dsl_error(
         "N M",
-        "N in -9223372036854775808..-9223372036854775808\nM in -N..1",
+        "N in -9223372036854775808..=-9223372036854775808\nM in -N..1",
         "integer overflow in expression `-N`",
+    );
+}
+
+#[test]
+fn diagnoses_overflow_in_an_upper_bound_and_array_length() {
+    assert_dsl_error(
+        "N M",
+        "N in 9223372036854775807..=9223372036854775807\nM in 0..=(N+1)",
+        "6:12: integer overflow in expression `(N+1)`",
+    );
+    assert_dsl_error(
+        "N A[N*2]",
+        "N in 9223372036854775807..=9223372036854775807\nA[*] in 0..=0",
+        "2:6: integer overflow in expression `N*2`",
     );
 }
 
@@ -312,13 +402,13 @@ fn validates_references_nested_inside_expressions() {
         ),
         ("N", "N in (2+N*3)..2", "`N` is not available"),
         (
-            "A[1..2] N",
-            "A[*] in 1..1\nN in 1..(2+A)",
+            "A[2] N",
+            "A[*] in 1..=1\nN in 1..(2+A)",
             "expected a scalar",
         ),
         (
-            "A[1..(N*2)] N",
-            "A[*] in 1..1\nN in 1..2",
+            "A[N*2] N",
+            "A[*] in 1..=1\nN in 1..2",
             "`N` is not available",
         ),
     ] {
@@ -328,19 +418,19 @@ fn validates_references_nested_inside_expressions() {
 
 #[test]
 fn diagnoses_invalid_evaluated_ranges_and_lengths() {
-    let source = dsl("N M", "    N in 2..2\n    M in (1+N)..(N-1)");
+    let source = dsl("N M", "    N in 2..=2\n    M in (1+N)..(N-1)");
     assert_eq!(
         generate(&source, 42).unwrap_err().to_string(),
-        "6:17: invalid range: lower bound 3 exceeds upper bound 1 in `(1+N)..(N-1)`"
+        "6:17: invalid range `(1+N)..(N-1)`: empty with lower bound 3 and upper bound 1"
     );
     assert_dsl_error(
-        "N A[1..(N-1)]",
-        "N in 1..1\nA[*] in 1..1",
+        "N A[N-1]",
+        "N in 1..=1\nA[*] in 1..=1",
         "invalid array length 0",
     );
     assert_dsl_error(
-        "N A[1..N*2]",
-        "N in 500000..500000\nA[*] in 1..1",
+        "N A[N*2]",
+        "N in 500000..=500000\nA[*] in 1..=1",
         "integer limit exceeded (1000000) in expression `N*2`",
     );
 }
@@ -348,7 +438,7 @@ fn diagnoses_invalid_evaluated_ranges_and_lengths() {
 #[test]
 fn rejects_unbalanced_parentheses_and_unsupported_operators() {
     assert_dsl_error("N", "N in 1..(2+3", "expected `)`");
-    assert_dsl_error("A[1..(2+3]", "A[*] in 1..1", "expected `)`");
+    assert_dsl_error("A[(2+3]", "A[*] in 1..=1", "expected `)`");
     assert_dsl_error("N", "N in 1..(2+3))", "expected end of line");
     assert_dsl_error("N", "N in 1..2^3", "5:10: expected end of line");
     assert_dsl_error("N", "N in 1..2**3", "5:11: expected an integer");
@@ -382,7 +472,7 @@ fn dsl(row: &str, constraints: &str) -> String {
 }
 
 fn assert_expression(expr: &str, expected: i64) {
-    let source = dsl("N", &format!("N in {expr}..{expr}"));
+    let source = dsl("N", &format!("N in {expr}..={expr}"));
     assert_eq!(
         generate(&source, 42).unwrap(),
         format!("{expected}\n"),

@@ -13,8 +13,20 @@ pub(crate) struct Declaration<'a> {
 pub(crate) struct Constraint<'a> {
     pub target: Name<'a>,
     pub array_elements: bool,
+    pub range: RangeExpr<'a>,
+}
+
+pub(crate) struct RangeExpr<'a> {
     pub lower: Expr<'a>,
     pub upper: Expr<'a>,
+    pub end: RangeEnd,
+    pub source: &'a str,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RangeEnd {
+    Exclusive,
+    Inclusive,
 }
 
 #[derive(Clone, Copy)]

@@ -1,0 +1,8 @@
+input {
+    N
+    M
+}
+constraints {
+    N in 1..=1
+    M in N..N
+}

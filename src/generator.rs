@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::Error;
-use crate::ast::{BinaryOp, Expr, ExprNode, Located, UnaryOp};
+use crate::ast::{BinaryOp, Expr, ExprNode, Located, RangeEnd, RangeExpr, UnaryOp};
 use crate::error::Position;
 use crate::validation::ValidatedInput;
 
@@ -49,20 +49,10 @@ pub(crate) fn generate(input: &ValidatedInput<'_>, seed: u64) -> Result<String, 
                 })?;
             integers += count;
 
-            let lower = evaluate(&constraint.lower, &scalars)?;
-            let upper = evaluate(&constraint.upper, &scalars)?;
-            if lower > upper {
-                return Err(Error::at(
-                    constraint.upper.position,
-                    format!(
-                        "invalid range: lower bound {lower} exceeds upper bound {upper} in `{}..{}`",
-                        constraint.lower.source, constraint.upper.source,
-                    ),
-                ));
-            }
+            let (lower, width) = evaluate_range(&constraint.range, &scalars)?;
 
             for _ in 0..count {
-                let value = rng.inclusive(lower, upper);
+                let value = rng.sample(lower, width);
                 if declaration.length.is_none() {
                     scalars.insert(name.value, value);
                 }
@@ -77,6 +67,30 @@ pub(crate) fn generate(input: &ValidatedInput<'_>, seed: u64) -> Result<String, 
         check_output_size(&output, row[0].declaration.name.position)?;
     }
     Ok(output)
+}
+
+fn evaluate_range(
+    range: &RangeExpr<'_>,
+    scalars: &HashMap<&str, i64>,
+) -> Result<(i64, i128), Error> {
+    let lower = evaluate(&range.lower, scalars)?;
+    let upper = evaluate(&range.upper, scalars)?;
+    // Widen before subtraction so even a range spanning all i64 values fits.
+    let difference = i128::from(upper) - i128::from(lower);
+    let width = match range.end {
+        RangeEnd::Exclusive => difference,
+        RangeEnd::Inclusive => difference + 1,
+    };
+    if width <= 0 {
+        return Err(Error::at(
+            range.upper.position,
+            format!(
+                "invalid range `{}`: empty with lower bound {lower} and upper bound {upper}",
+                range.source,
+            ),
+        ));
+    }
+    Ok((lower, width))
 }
 
 fn evaluate(expr: &Expr<'_>, scalars: &HashMap<&str, i64>) -> Result<i64, Error> {
@@ -148,8 +162,7 @@ impl SplitMix64 {
         word ^ (word >> 31)
     }
 
-    fn inclusive(&mut self, lower: i64, upper: i64) -> i64 {
-        let width = i128::from(upper) - i128::from(lower) + 1;
+    fn sample(&mut self, lower: i64, width: i128) -> i64 {
         let offset = if let Ok(width) = u64::try_from(width) {
             // Discard 2^64 mod width values so all residues are equally likely.
             let threshold = width.wrapping_neg() % width;

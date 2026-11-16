@@ -1,6 +1,7 @@
 use crate::Error;
 use crate::ast::{
-    BinaryOp, Constraint, Declaration, Expr, ExprNode, Input, Located, Name, UnaryOp,
+    BinaryOp, Constraint, Declaration, Expr, ExprNode, Input, Located, Name, RangeEnd, RangeExpr,
+    UnaryOp,
 };
 use crate::error::Position;
 
@@ -262,12 +263,13 @@ impl<'a> Line<'a> {
     fn declaration(&mut self) -> Result<Declaration<'a>, Error> {
         let name = self.identifier()?;
         let length = if self.consume("[") {
-            let position = self.position();
-            if self.digits().parse::<i64>() != Ok(1) {
-                return Err(Error::at(position, "array indices must start at 1"));
-            }
-            self.expect("..")?;
             let length = self.expression()?;
+            if self.remaining().starts_with("..") {
+                return Err(Error::at(
+                    self.position(),
+                    "expected an array length expression such as `A[N]`, found a range",
+                ));
+            }
             self.expect("]")?;
             Some(length)
         } else {
@@ -298,15 +300,41 @@ impl<'a> Line<'a> {
             self.expect("]")?;
         }
         self.keyword("in")?;
-        let lower = self.expression()?;
-        self.expect("..")?;
-        let upper = self.expression()?;
+        let range = self.range()?;
         self.finish()?;
         Ok(Constraint {
             target,
             array_elements,
+            range,
+        })
+    }
+
+    fn range(&mut self) -> Result<RangeExpr<'a>, Error> {
+        let source = self.remaining();
+        let lower = self.expression()?;
+        let position = self.position();
+        for invalid in ["...", "..=="] {
+            if self.consume(invalid) {
+                return Err(Error::at(
+                    position,
+                    format!("invalid range operator `{invalid}`"),
+                ));
+            }
+        }
+        let end = if self.consume("..=") {
+            RangeEnd::Inclusive
+        } else if self.consume("..") {
+            RangeEnd::Exclusive
+        } else {
+            return Err(Error::at(position, "expected range operator `..` or `..=`"));
+        };
+        let upper = self.expression()?;
+        let source = &source[..source.len() - self.rest.len()];
+        Ok(RangeExpr {
             lower,
             upper,
+            end,
+            source,
         })
     }
 }

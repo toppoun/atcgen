@@ -1,13 +1,13 @@
 input {
     N M
-    A[1..(N*M)]
-    B[1..M]
+    A[N*M]
+    B[M]
 
 }
 
 constraints {
-    N in 1..10
+    N in 2..=10
     M in 1..N
-    A[*] in -(N*M)..(N*M)
-    B[*] in -100..100
+    A[*] in -(N*M)..=(N*M)
+    B[*] in -100..=100
 }
