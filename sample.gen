@@ -1,0 +1,12 @@
+input {
+    N M
+    A[1..(N*M)]
+    B[1..M]
+}
+
+constraints {
+    N in 1..10
+    M in 1..10
+    A[*] in 1..100
+    B[*] in -100..100
+}
