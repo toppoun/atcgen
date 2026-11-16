@@ -1,6 +1,10 @@
 use crate::Error;
-use crate::ast::{Constraint, Declaration, Endpoint, Input, Located, Name, Value};
+use crate::ast::{
+    BinaryOp, Constraint, Declaration, Expr, ExprNode, Input, Located, Name, UnaryOp,
+};
 use crate::error::Position;
+
+const MAX_EXPRESSION_NESTING: usize = 128;
 
 pub(crate) fn parse(source: &str) -> Result<Input<'_>, Error> {
     let mut lines = source
@@ -129,46 +133,141 @@ impl<'a> Line<'a> {
         Ok(Located { value, position })
     }
 
-    fn endpoint(&mut self) -> Result<Endpoint<'a>, Error> {
+    fn expression(&mut self) -> Result<Expr<'a>, Error> {
         let position = self.position();
-        let rest = self.remaining();
-        if rest.bytes().next().is_some_and(identifier_start) {
-            let name = self.identifier()?;
-            return Ok(Located {
-                value: Value::Scalar(name.value),
-                position,
-            });
-        }
+        let source = self.remaining();
+        let node = self.sum(0)?;
+        let source = &source[..source.len() - self.rest.len()];
+        Ok(Expr {
+            position,
+            source,
+            node,
+        })
+    }
 
-        let digits = rest.strip_prefix('-').unwrap_or(rest);
-        let digit_count = digits.bytes().take_while(u8::is_ascii_digit).count();
-        if digit_count == 0 {
+    fn sum(&mut self, nesting: usize) -> Result<ExprNode<'a>, Error> {
+        self.binary_chain(
+            nesting,
+            Self::product,
+            &[("+", BinaryOp::Add), ("-", BinaryOp::Subtract)],
+        )
+    }
+
+    fn product(&mut self, nesting: usize) -> Result<ExprNode<'a>, Error> {
+        self.binary_chain(
+            nesting,
+            Self::unary,
+            &[
+                ("*", BinaryOp::Multiply),
+                ("/", BinaryOp::Divide),
+                ("%", BinaryOp::Remainder),
+            ],
+        )
+    }
+
+    fn binary_chain(
+        &mut self,
+        nesting: usize,
+        operand: fn(&mut Self, usize) -> Result<ExprNode<'a>, Error>,
+        operators: &[(&str, BinaryOp)],
+    ) -> Result<ExprNode<'a>, Error> {
+        let first = operand(self, nesting)?;
+        let mut rest = Vec::new();
+        loop {
+            let position = self.position();
+            let Some(value) = operators
+                .iter()
+                .find_map(|&(symbol, op)| self.consume(symbol).then_some(op))
+            else {
+                break;
+            };
+            rest.push((Located { value, position }, operand(self, nesting)?));
+        }
+        if rest.is_empty() {
+            Ok(first)
+        } else {
+            Ok(ExprNode::Binary {
+                first: Box::new(first),
+                rest,
+            })
+        }
+    }
+
+    fn unary(&mut self, nesting: usize) -> Result<ExprNode<'a>, Error> {
+        let position = self.position();
+        if nesting > MAX_EXPRESSION_NESTING {
             return Err(Error::at(
                 position,
-                "expected an integer or scalar variable",
+                format!("expression nesting limit exceeded ({MAX_EXPRESSION_NESTING})"),
             ));
         }
-        let length = (rest.len() - digits.len()) + digit_count;
-        let (literal, rest) = rest.split_at(length);
-        let value = literal
-            .parse()
-            .map_err(|_| Error::at(position, "integer literal is outside the i64 range"))?;
+
+        if self.consume("-") {
+            // A signed literal can represent i64::MIN directly.
+            if self
+                .remaining()
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_digit)
+            {
+                return self.literal(position, true);
+            }
+            let op = Located {
+                value: UnaryOp::Minus,
+                position,
+            };
+            let operand = Box::new(self.unary(nesting + 1)?);
+            return Ok(ExprNode::Unary { op, operand });
+        }
+        if self.consume("+") {
+            let op = Located {
+                value: UnaryOp::Plus,
+                position,
+            };
+            let operand = Box::new(self.unary(nesting + 1)?);
+            return Ok(ExprNode::Unary { op, operand });
+        }
+        if self.consume("(") {
+            let node = self.sum(nesting + 1)?;
+            self.expect(")")?;
+            return Ok(node);
+        }
+        match self.remaining().bytes().next() {
+            Some(byte) if identifier_start(byte) => self.identifier().map(ExprNode::Variable),
+            Some(byte) if byte.is_ascii_digit() => self.literal(position, false),
+            _ => Err(Error::at(
+                position,
+                "expected an integer, scalar variable or `(`",
+            )),
+        }
+    }
+
+    fn digits(&mut self) -> &'a str {
+        let rest = self.remaining();
+        let length = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let (digits, rest) = rest.split_at(length);
         self.rest = rest;
-        Ok(Located {
-            value: Value::Integer(value),
-            position,
-        })
+        digits
+    }
+
+    fn literal(&mut self, position: Position, negative: bool) -> Result<ExprNode<'a>, Error> {
+        self.digits()
+            .parse::<i128>()
+            .ok()
+            .and_then(|value| i64::try_from(if negative { -value } else { value }).ok())
+            .map(ExprNode::Literal)
+            .ok_or_else(|| Error::at(position, "integer literal is outside the i64 range"))
     }
 
     fn declaration(&mut self) -> Result<Declaration<'a>, Error> {
         let name = self.identifier()?;
         let length = if self.consume("[") {
-            let first = self.endpoint()?;
-            if !matches!(first.value, Value::Integer(1)) {
-                return Err(Error::at(first.position, "array indices must start at 1"));
+            let position = self.position();
+            if self.digits().parse::<i64>() != Ok(1) {
+                return Err(Error::at(position, "array indices must start at 1"));
             }
             self.expect("..")?;
-            let length = self.endpoint()?;
+            let length = self.expression()?;
             self.expect("]")?;
             Some(length)
         } else {
@@ -199,9 +298,9 @@ impl<'a> Line<'a> {
             self.expect("]")?;
         }
         self.keyword("in")?;
-        let lower = self.endpoint()?;
+        let lower = self.expression()?;
         self.expect("..")?;
-        let upper = self.endpoint()?;
+        let upper = self.expression()?;
         self.finish()?;
         Ok(Constraint {
             target,

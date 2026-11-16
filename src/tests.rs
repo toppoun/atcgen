@@ -1,5 +1,19 @@
 use crate::generate;
 
+const EXPRESSION_EXAMPLE: &str = "input {
+    N M
+    A[1..(N*M)]
+    B[1..M]
+}
+
+constraints {
+    N in 1..10
+    M in 1..N
+    A[*] in -(N*M)..(N*M)
+    B[*] in -100..100
+}
+";
+
 #[test]
 fn generates_a_scalar() {
     let source = "input {\n    N\n}\nconstraints {\n    N in 7..7\n}\n";
@@ -40,10 +54,9 @@ fn samples_both_ends_of_a_negative_range() {
 }
 
 #[test]
-fn reproduces_output_for_a_seed() {
-    let source = include_str!("../sample.gen");
+fn preserves_mvp_output_for_the_same_seed() {
+    let source = "input {\n    N M\n    A[1..N]\n    B[1..M]\n}\n\nconstraints {\n    N in 1..10\n    M in 1..10\n    A[*] in 1..100\n    B[*] in -100..100\n}\n";
     let expected = "4 2\n59 65 51 63\n-75 -38\n";
-    assert_eq!(generate(source, 42).unwrap(), expected);
     assert_eq!(generate(source, 42).unwrap(), expected);
     assert_ne!(generate(source, 43).unwrap(), expected);
 }
@@ -59,7 +72,7 @@ fn reports_syntax_errors_with_a_line_and_column() {
     let source = "input {\n  A[1..]\n}\nconstraints {\n}\n";
     assert_eq!(
         generate(source, 42).unwrap_err().to_string(),
-        "2:8: expected an integer or scalar variable"
+        "2:8: expected an integer, scalar variable or `(`"
     );
 }
 
@@ -173,8 +186,212 @@ fn reproduces_sampling_after_rejecting_a_random_word() {
     assert_eq!(generate(source, 3).unwrap(), "-5528608851982440056\n");
 }
 
+#[test]
+fn evaluates_binary_arithmetic() {
+    for (expr, value) in [
+        ("5+8", 13),
+        ("5-8", -3),
+        ("3*4", 12),
+        ("7/3", 2),
+        ("-7/3", -2),
+        ("7/-3", -2),
+        ("-7%3", -1),
+        ("7%-3", 1),
+    ] {
+        assert_expression(expr, value);
+    }
+}
+
+#[test]
+fn respects_precedence_and_left_associativity() {
+    assert_expression("2 + 3*4 - 8/2%3", 13);
+    assert_expression("20-6-3", 11);
+    assert_expression("24/3*2%5", 1);
+}
+
+#[test]
+fn parentheses_override_precedence() {
+    assert_expression("(2 + 3) * 4", 20);
+    assert_expression("7 / (3 + 1)", 1);
+    assert_expression("20-(6-3)", 17);
+}
+
+#[test]
+fn evaluates_unary_operators() {
+    assert_expression("-(2 + 3)", -5);
+    assert_expression("+-(-3)", 3);
+    assert_expression("-+(2)*3", -6);
+    assert_expression("7+-3", 4);
+    assert_expression("- 9223372036854775808", i64::MIN);
+}
+
+#[test]
+fn evaluates_multiple_scalar_references_in_generation_order() {
+    let source = dsl("N M K", "K in +(N+M)..(M*2-N)\nM in 6..6\nN in 3..3");
+    assert_eq!(generate(&source, 42).unwrap(), "3 6 9\n");
+}
+
+#[test]
+fn generates_an_array_of_length_n_minus_one() {
+    let source = dsl("N A[1..N-1]", "A[*] in 9..9\nN in 4..4");
+    assert_eq!(generate(&source, 42).unwrap(), "4 9 9 9\n");
+}
+
+#[test]
+fn generates_product_length_and_dynamic_bounds() {
+    for seed in 0..64 {
+        let output = generate(EXPRESSION_EXAMPLE, seed).unwrap();
+        let mut lines = output.lines();
+        let header = parse_integers(lines.next().unwrap());
+        let [n, m] = header[..] else {
+            panic!("expected two scalars");
+        };
+        assert!((1..=10).contains(&n));
+        assert!((1..=n).contains(&m));
+
+        let product = n * m;
+        let a = parse_integers(lines.next().unwrap());
+        assert_eq!(a.len(), usize::try_from(product).unwrap());
+        assert!(a.iter().all(|value| (-product..=product).contains(value)));
+        let b = parse_integers(lines.next().unwrap());
+        assert_eq!(b.len(), usize::try_from(m).unwrap());
+        assert!(b.iter().all(|value| (-100..=100).contains(value)));
+        assert!(lines.next().is_none());
+    }
+}
+
+#[test]
+fn expressions_preserve_reproducibility() {
+    let expected = "4 4\n8 -4 -3 -7 -9 -14 -6 16 -14 -12 -8 -12 16 -11 7 -7\n2 71 92 9\n";
+    assert_eq!(generate(EXPRESSION_EXAMPLE, 42).unwrap(), expected);
+    assert_eq!(generate(EXPRESSION_EXAMPLE, 42).unwrap(), expected);
+    assert_ne!(generate(EXPRESSION_EXAMPLE, 43).unwrap(), expected);
+}
+
+#[test]
+fn diagnoses_arithmetic_errors_at_the_operator() {
+    let source = dsl("    N\n    A[1..(12/(N-2))]", "N in 2..2\nA[*] in 1..1");
+    assert_eq!(
+        generate(&source, 42).unwrap_err().to_string(),
+        "3:13: division by zero in expression `(12/(N-2))`"
+    );
+    assert_dsl_error("N M", "N in 1..1\nM in 0..10%(N-1)", "remainder by zero");
+}
+
+#[test]
+fn detects_overflow_in_each_arithmetic_operation() {
+    for expr in [
+        "9223372036854775807+1-1",
+        "-9223372036854775808-1",
+        "9223372036854775807*2",
+        "-9223372036854775808/-1",
+        "-9223372036854775808%-1",
+        "--9223372036854775808",
+    ] {
+        assert_dsl_error("N", &format!("N in {expr}..0"), "integer overflow");
+    }
+    assert_dsl_error(
+        "N M",
+        "N in -9223372036854775808..-9223372036854775808\nM in -N..1",
+        "integer overflow in expression `-N`",
+    );
+}
+
+#[test]
+fn validates_references_nested_inside_expressions() {
+    let source = dsl("N", "    N in 1..(2 + X*3)");
+    assert_eq!(
+        generate(&source, 42).unwrap_err().to_string(),
+        "5:18: undefined variable `X`"
+    );
+    for (row, rules, error) in [
+        (
+            "N M",
+            "N in -(-M)..2\nM in (N+1)..3",
+            "`M` is not available",
+        ),
+        ("N", "N in (2+N*3)..2", "`N` is not available"),
+        (
+            "A[1..2] N",
+            "A[*] in 1..1\nN in 1..(2+A)",
+            "expected a scalar",
+        ),
+        (
+            "A[1..(N*2)] N",
+            "A[*] in 1..1\nN in 1..2",
+            "`N` is not available",
+        ),
+    ] {
+        assert_dsl_error(row, rules, error);
+    }
+}
+
+#[test]
+fn diagnoses_invalid_evaluated_ranges_and_lengths() {
+    let source = dsl("N M", "    N in 2..2\n    M in (1+N)..(N-1)");
+    assert_eq!(
+        generate(&source, 42).unwrap_err().to_string(),
+        "6:17: invalid range: lower bound 3 exceeds upper bound 1 in `(1+N)..(N-1)`"
+    );
+    assert_dsl_error(
+        "N A[1..(N-1)]",
+        "N in 1..1\nA[*] in 1..1",
+        "invalid array length 0",
+    );
+    assert_dsl_error(
+        "N A[1..N*2]",
+        "N in 500000..500000\nA[*] in 1..1",
+        "integer limit exceeded (1000000) in expression `N*2`",
+    );
+}
+
+#[test]
+fn rejects_unbalanced_parentheses_and_unsupported_operators() {
+    assert_dsl_error("N", "N in 1..(2+3", "expected `)`");
+    assert_dsl_error("A[1..(2+3]", "A[*] in 1..1", "expected `)`");
+    assert_dsl_error("N", "N in 1..(2+3))", "expected end of line");
+    assert_dsl_error("N", "N in 1..2^3", "5:10: expected end of line");
+    assert_dsl_error("N", "N in 1..2**3", "5:11: expected an integer");
+}
+
+#[test]
+fn limits_nesting_but_handles_long_operator_chains() {
+    let nested = format!("{}1{}", "(".repeat(128), ")".repeat(128));
+    assert_expression(&nested, 1);
+    assert_dsl_error(
+        "N",
+        &format!("N in 1..({nested})"),
+        "expression nesting limit exceeded",
+    );
+    assert_dsl_error(
+        "N",
+        &format!("N in 1..{}1", "+".repeat(129)),
+        "expression nesting limit exceeded",
+    );
+    assert_expression(&format!("1{}", "+1".repeat(10_000)), 10_001);
+}
+
+fn parse_integers(line: &str) -> Vec<i64> {
+    line.split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect()
+}
+
+fn dsl(row: &str, constraints: &str) -> String {
+    format!("input {{\n{row}\n}}\nconstraints {{\n{constraints}\n}}\n")
+}
+
+fn assert_expression(expr: &str, expected: i64) {
+    let source = dsl("N", &format!("N in {expr}..{expr}"));
+    assert_eq!(
+        generate(&source, 42).unwrap(),
+        format!("{expected}\n"),
+        "{expr}"
+    );
+}
+
 fn assert_dsl_error(row: &str, constraints: &str, expected: &str) {
-    let source = format!("input {{\n{row}\n}}\nconstraints {{\n{constraints}\n}}\n");
+    let source = dsl(row, constraints);
     let error = generate(&source, 42).unwrap_err().to_string();
     assert!(
         error.contains(expected),

@@ -7,14 +7,14 @@ pub(crate) struct Input<'a> {
 
 pub(crate) struct Declaration<'a> {
     pub name: Name<'a>,
-    pub length: Option<Endpoint<'a>>,
+    pub length: Option<Expr<'a>>,
 }
 
 pub(crate) struct Constraint<'a> {
     pub target: Name<'a>,
     pub array_elements: bool,
-    pub lower: Endpoint<'a>,
-    pub upper: Endpoint<'a>,
+    pub lower: Expr<'a>,
+    pub upper: Expr<'a>,
 }
 
 #[derive(Clone, Copy)]
@@ -24,10 +24,38 @@ pub(crate) struct Located<T> {
 }
 
 pub(crate) type Name<'a> = Located<&'a str>;
-pub(crate) type Endpoint<'a> = Located<Value<'a>>;
+
+pub(crate) struct Expr<'a> {
+    pub position: Position,
+    pub source: &'a str,
+    pub node: ExprNode<'a>,
+}
+
+pub(crate) enum ExprNode<'a> {
+    Literal(i64),
+    Variable(Name<'a>),
+    Unary {
+        op: Located<UnaryOp>,
+        operand: Box<ExprNode<'a>>,
+    },
+    Binary {
+        first: Box<ExprNode<'a>>,
+        // Operators of the same precedence are evaluated left to right.
+        rest: Vec<(Located<BinaryOp>, ExprNode<'a>)>,
+    },
+}
 
 #[derive(Clone, Copy)]
-pub(crate) enum Value<'a> {
-    Integer(i64),
-    Scalar(&'a str),
+pub(crate) enum UnaryOp {
+    Plus,
+    Minus,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum BinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
 }

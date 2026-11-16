@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::Error;
-use crate::ast::{Constraint, Declaration, Endpoint, Input, Value};
+use crate::ast::{Constraint, Declaration, ExprNode, Input, Name};
 
 pub(crate) struct ValidatedInput<'a> {
     pub rows: Vec<Vec<Variable<'a>>>,
@@ -70,11 +70,11 @@ pub(crate) fn validate(input: Input<'_>) -> Result<ValidatedInput<'_>, Error> {
                 ));
             };
             let index = declarations[name.value].index;
-            if let Some(length) = declaration.length {
-                validate_reference(length, index, &declarations)?;
+            if let Some(length) = &declaration.length {
+                validate_expression(&length.node, index, &declarations)?;
             }
-            validate_reference(constraint.lower, index, &declarations)?;
-            validate_reference(constraint.upper, index, &declarations)?;
+            validate_expression(&constraint.lower.node, index, &declarations)?;
+            validate_expression(&constraint.upper.node, index, &declarations)?;
             variables.push(Variable {
                 declaration,
                 constraint,
@@ -85,14 +85,31 @@ pub(crate) fn validate(input: Input<'_>) -> Result<ValidatedInput<'_>, Error> {
     Ok(ValidatedInput { rows })
 }
 
-fn validate_reference(
-    endpoint: Endpoint<'_>,
+fn validate_expression(
+    node: &ExprNode<'_>,
     current: usize,
     declarations: &HashMap<&str, DeclarationInfo>,
 ) -> Result<(), Error> {
-    let Value::Scalar(name) = endpoint.value else {
-        return Ok(());
-    };
+    match node {
+        ExprNode::Literal(_) => Ok(()),
+        ExprNode::Variable(name) => validate_reference(*name, current, declarations),
+        ExprNode::Unary { operand, .. } => validate_expression(operand, current, declarations),
+        ExprNode::Binary { first, rest } => {
+            validate_expression(first, current, declarations)?;
+            for (_, operand) in rest {
+                validate_expression(operand, current, declarations)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_reference(
+    reference: Name<'_>,
+    current: usize,
+    declarations: &HashMap<&str, DeclarationInfo>,
+) -> Result<(), Error> {
+    let name = reference.value;
     let message = match declarations.get(name) {
         None => format!("undefined variable `{name}`"),
         Some(info) if info.array => format!("`{name}` is an array; expected a scalar"),
@@ -101,5 +118,5 @@ fn validate_reference(
         }
         Some(_) => return Ok(()),
     };
-    Err(Error::at(endpoint.position, message))
+    Err(Error::at(reference.position, message))
 }

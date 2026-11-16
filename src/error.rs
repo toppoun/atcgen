@@ -20,6 +20,11 @@ impl Error {
             message: message.into(),
         }
     }
+
+    pub(crate) fn with_expression(mut self, source: &str) -> Self {
+        self.message = format!("{} in expression `{source}`", self.message);
+        self
+    }
 }
 
 impl fmt::Display for Error {
