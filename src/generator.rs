@@ -1,29 +1,102 @@
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::Error;
-use crate::ast::{BinaryOp, Expr, ExprNode, Located, RangeEnd, RangeExpr, UnaryOp};
+use crate::ast::{BinaryOp, ExprNode, Located, RangeEnd, UnaryOp};
 use crate::error::Position;
-use crate::validation::ValidatedInput;
+use crate::validation::{
+    BoundExpr, BoundRange, Reference, ValidatedFor, ValidatedInput, ValidatedRow,
+    ValidatedStatement,
+};
 
 const MAX_INTEGERS: usize = 1_000_000;
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_LOOP_ITERATIONS: usize = MAX_INTEGERS;
+
+#[derive(Default)]
+struct Values {
+    current: Option<i64>,
+    collection: Vec<i64>,
+}
+
+struct Generator {
+    rng: SplitMix64,
+    values: Vec<Values>,
+    output: String,
+    integers: usize,
+}
 
 pub(crate) fn generate(input: &ValidatedInput<'_>, seed: u64) -> Result<String, Error> {
-    let mut rng = SplitMix64 { state: seed };
-    let mut scalars = HashMap::new();
-    let mut output = String::new();
-    let mut integers = 0;
+    let mut generator = Generator {
+        rng: SplitMix64 { state: seed },
+        values: std::iter::repeat_with(Values::default)
+            .take(input.slot_count)
+            .collect(),
+        output: String::new(),
+        integers: 0,
+    };
+    for statement in &input.statements {
+        match statement {
+            ValidatedStatement::Row(row) => generator.row(row, false)?,
+            ValidatedStatement::For(loop_) => generator.run_loop(loop_)?,
+        }
+    }
+    Ok(generator.output)
+}
 
-    for row in &input.rows {
-        let row_start = output.len();
-        for variable in row {
-            let declaration = &variable.declaration;
-            let constraint = &variable.constraint;
-            let name = declaration.name;
-            let length_expr = declaration.length.as_ref();
+impl Generator {
+    fn run_loop(&mut self, loop_: &ValidatedFor<'_>) -> Result<(), Error> {
+        let (start, _, width) = range_bounds(&loop_.range, &self.values)?;
+        if width <= 0 {
+            return Ok(());
+        }
+        let position = loop_.range.upper.position;
+        let count = usize::try_from(width)
+            .ok()
+            .filter(|&count| count <= MAX_LOOP_ITERATIONS)
+            .ok_or_else(|| {
+                Error::at(position, format!("loop iteration limit exceeded ({MAX_LOOP_ITERATIONS}): range `{}` has {width} iterations", loop_.range.source))
+            })?;
+        if loop_.rows.is_empty() {
+            return Ok(());
+        }
+
+        // Every row costs a newline, and every declaration produces at least one integer.
+        if loop_.rows.len() > (MAX_OUTPUT_BYTES - self.output.len()) / count {
+            return Err(output_limit(position));
+        }
+        let declarations = loop_.slots.len() - 1;
+        if declarations > (MAX_INTEGERS - self.integers) / count {
+            return Err(Error::at(
+                position,
+                format!(
+                    "integer limit exceeded ({MAX_INTEGERS}) in loop range `{}`",
+                    loop_.range.source
+                ),
+            ));
+        }
+
+        for offset in 0..count {
+            let index = start
+                .checked_add(offset as i64)
+                .ok_or_else(|| Error::at(position, "loop index overflow"))?;
+            self.values[loop_.slots.start].current = Some(index);
+            for row in &loop_.rows {
+                self.row(row, true)?;
+            }
+            for values in &mut self.values[loop_.slots.clone()] {
+                values.current = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn row(&mut self, row: &ValidatedRow<'_>, repeated: bool) -> Result<(), Error> {
+        let row_start = self.output.len();
+        for variable in &row.variables {
+            let name = variable.name;
+            let length_expr = variable.length.as_ref();
             let length = if let Some(expr) = length_expr {
-                let length = evaluate(expr, &scalars)?;
+                let length = evaluate(expr, &self.values)?;
                 if length <= 0 {
                     return Err(Error::at(
                         expr.position,
@@ -37,7 +110,7 @@ pub(crate) fn generate(input: &ValidatedInput<'_>, seed: u64) -> Result<String, 
             };
             let count = usize::try_from(length)
                 .ok()
-                .filter(|&count| count <= MAX_INTEGERS - integers)
+                .filter(|&count| count <= MAX_INTEGERS - self.integers)
                 .ok_or_else(|| {
                     let message = format!("integer limit exceeded ({MAX_INTEGERS})");
                     match length_expr {
@@ -47,40 +120,45 @@ pub(crate) fn generate(input: &ValidatedInput<'_>, seed: u64) -> Result<String, 
                         None => Error::at(name.position, message),
                     }
                 })?;
-            integers += count;
+            self.integers += count;
 
-            let (lower, width) = evaluate_range(&constraint.range, &scalars)?;
+            let (lower, width) = evaluate_range(&variable.range, &self.values)?;
 
+            let values = &mut self.values[variable.slot];
             for _ in 0..count {
-                let value = rng.sample(lower, width);
-                if declaration.length.is_none() {
-                    scalars.insert(name.value, value);
+                let value = self.rng.sample(lower, width);
+                if length_expr.is_none() {
+                    values.current = Some(value);
                 }
-                if output.len() != row_start {
-                    output.push(' ');
+                if repeated || length_expr.is_some() {
+                    values.collection.push(value);
                 }
-                write!(output, "{value}").expect("writing to a String cannot fail");
-                check_output_size(&output, name.position)?;
+                if self.output.len() != row_start {
+                    self.output.push(' ');
+                }
+                write!(self.output, "{value}").expect("writing to a String cannot fail");
+                check_output_size(&self.output, name.position)?;
             }
         }
-        output.push('\n');
-        check_output_size(&output, row[0].declaration.name.position)?;
+        self.output.push('\n');
+        check_output_size(&self.output, row.position)
     }
-    Ok(output)
 }
 
-fn evaluate_range(
-    range: &RangeExpr<'_>,
-    scalars: &HashMap<&str, i64>,
-) -> Result<(i64, i128), Error> {
-    let lower = evaluate(&range.lower, scalars)?;
-    let upper = evaluate(&range.upper, scalars)?;
+fn range_bounds(range: &BoundRange<'_>, values: &[Values]) -> Result<(i64, i64, i128), Error> {
+    let lower = evaluate(&range.lower, values)?;
+    let upper = evaluate(&range.upper, values)?;
     // Widen before subtraction so even a range spanning all i64 values fits.
     let difference = i128::from(upper) - i128::from(lower);
     let width = match range.end {
         RangeEnd::Exclusive => difference,
         RangeEnd::Inclusive => difference + 1,
     };
+    Ok((lower, upper, width))
+}
+
+fn evaluate_range(range: &BoundRange<'_>, values: &[Values]) -> Result<(i64, i128), Error> {
+    let (lower, upper, width) = range_bounds(range, values)?;
     if width <= 0 {
         return Err(Error::at(
             range.upper.position,
@@ -93,21 +171,21 @@ fn evaluate_range(
     Ok((lower, width))
 }
 
-fn evaluate(expr: &Expr<'_>, scalars: &HashMap<&str, i64>) -> Result<i64, Error> {
-    evaluate_node(&expr.node, scalars).map_err(|error| error.with_expression(expr.source))
+fn evaluate(expr: &BoundExpr<'_>, values: &[Values]) -> Result<i64, Error> {
+    evaluate_node(&expr.node, values).map_err(|error| error.with_expression(expr.source))
 }
 
-fn evaluate_node(node: &ExprNode<'_>, scalars: &HashMap<&str, i64>) -> Result<i64, Error> {
+fn evaluate_node(node: &ExprNode<Reference<'_>>, values: &[Values]) -> Result<i64, Error> {
     match node {
         ExprNode::Literal(value) => Ok(*value),
-        ExprNode::Variable(name) => scalars.get(name.value).copied().ok_or_else(|| {
+        ExprNode::Variable(reference) => values[reference.slot].current.ok_or_else(|| {
             Error::at(
-                name.position,
-                format!("scalar `{}` is not available", name.value),
+                reference.name.position,
+                format!("scalar `{}` is not available", reference.name.value),
             )
         }),
         ExprNode::Unary { op, operand } => {
-            let value = evaluate_node(operand, scalars)?;
+            let value = evaluate_node(operand, values)?;
             match op.value {
                 UnaryOp::Plus => Ok(value),
                 UnaryOp::Minus => value
@@ -116,9 +194,9 @@ fn evaluate_node(node: &ExprNode<'_>, scalars: &HashMap<&str, i64>) -> Result<i6
             }
         }
         ExprNode::Binary { first, rest } => {
-            let mut value = evaluate_node(first, scalars)?;
+            let mut value = evaluate_node(first, values)?;
             for (op, operand) in rest {
-                let rhs = evaluate_node(operand, scalars)?;
+                let rhs = evaluate_node(operand, values)?;
                 value = evaluate_binary(*op, value, rhs)?;
             }
             Ok(value)
@@ -141,12 +219,16 @@ fn evaluate_binary(op: Located<BinaryOp>, lhs: i64, rhs: i64) -> Result<i64, Err
 
 fn check_output_size(output: &str, position: Position) -> Result<(), Error> {
     if output.len() > MAX_OUTPUT_BYTES {
-        return Err(Error::at(
-            position,
-            format!("output size limit exceeded ({MAX_OUTPUT_BYTES} bytes)"),
-        ));
+        return Err(output_limit(position));
     }
     Ok(())
+}
+
+fn output_limit(position: Position) -> Error {
+    Error::at(
+        position,
+        format!("output size limit exceeded ({MAX_OUTPUT_BYTES} bytes)"),
+    )
 }
 
 struct SplitMix64 {

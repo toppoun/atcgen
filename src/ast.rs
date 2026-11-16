@@ -1,8 +1,24 @@
 use crate::error::Position;
 
 pub(crate) struct Input<'a> {
-    pub rows: Vec<Vec<Declaration<'a>>>,
+    pub statements: Vec<Statement<'a>>,
     pub constraints: Vec<Constraint<'a>>,
+}
+
+pub(crate) enum Statement<'a> {
+    Row(Row<'a>),
+    For(For<'a>),
+}
+
+pub(crate) struct Row<'a> {
+    pub position: Position,
+    pub declarations: Vec<Declaration<'a>>,
+}
+
+pub(crate) struct For<'a> {
+    pub index: Name<'a>,
+    pub range: RangeExpr<'a>,
+    pub rows: Vec<Row<'a>>,
 }
 
 pub(crate) struct Declaration<'a> {
@@ -12,13 +28,12 @@ pub(crate) struct Declaration<'a> {
 
 pub(crate) struct Constraint<'a> {
     pub target: Name<'a>,
-    pub array_elements: bool,
     pub range: RangeExpr<'a>,
 }
 
-pub(crate) struct RangeExpr<'a> {
-    pub lower: Expr<'a>,
-    pub upper: Expr<'a>,
+pub(crate) struct RangeExpr<'a, Ref = Name<'a>> {
+    pub lower: Expr<'a, Ref>,
+    pub upper: Expr<'a, Ref>,
     pub end: RangeEnd,
     pub source: &'a str,
 }
@@ -37,23 +52,23 @@ pub(crate) struct Located<T> {
 
 pub(crate) type Name<'a> = Located<&'a str>;
 
-pub(crate) struct Expr<'a> {
+pub(crate) struct Expr<'a, Ref = Name<'a>> {
     pub position: Position,
     pub source: &'a str,
-    pub node: ExprNode<'a>,
+    pub node: ExprNode<Ref>,
 }
 
-pub(crate) enum ExprNode<'a> {
+pub(crate) enum ExprNode<Ref> {
     Literal(i64),
-    Variable(Name<'a>),
+    Variable(Ref),
     Unary {
         op: Located<UnaryOp>,
-        operand: Box<ExprNode<'a>>,
+        operand: Box<ExprNode<Ref>>,
     },
     Binary {
-        first: Box<ExprNode<'a>>,
+        first: Box<ExprNode<Ref>>,
         // Operators of the same precedence are evaluated left to right.
-        rest: Vec<(Located<BinaryOp>, ExprNode<'a>)>,
+        rest: Vec<(Located<BinaryOp>, ExprNode<Ref>)>,
     },
 }
 

@@ -1,0 +1,10 @@
+input {
+    N
+    for i in 1..=N {
+        A
+    }
+}
+constraints {
+    N in 3..=3
+    A in i..N
+}
