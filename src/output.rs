@@ -22,7 +22,7 @@ pub(crate) fn validate(
 ) -> Result<VerifiedOutput, Error> {
     let limited = statements.iter().any(|statement| match statement {
         BoundInputStmt::Row(_) => false,
-        BoundInputStmt::RowBlock { .. } => true,
+        BoundInputStmt::RowBlock { .. } | BoundInputStmt::If { .. } => true,
         BoundInputStmt::For { body, .. } => body
             .iter()
             .any(|item| !matches!(item, BoundInputStmt::Row(_))),
@@ -60,6 +60,19 @@ impl VerifiedOutput {
                     if row_start.is_none() {
                         self.end_row(row.position)?;
                     }
+                }
+                BoundInputStmt::If {
+                    condition,
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    let body = if evaluation.condition(condition)? {
+                        then_body.as_slice()
+                    } else {
+                        else_body.as_deref().unwrap_or_default()
+                    };
+                    self.execute(body, values, loop_values, work, row_start)?;
                 }
                 BoundInputStmt::RowBlock { position, body } => {
                     let start = self.integers.len();

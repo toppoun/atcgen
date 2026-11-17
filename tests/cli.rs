@@ -48,6 +48,14 @@ fn cli_leaves_stdout_empty_when_a_later_row_fails() {
     );
 }
 
+#[test]
+fn cli_leaves_stdout_empty_when_a_later_conditional_row_fails() {
+    assert_error(
+        "conditional-output-error.gen",
+        "14:21: array element `A[2]` is uninitialized",
+    );
+}
+
 fn assert_error(file: &str, expected: &str) {
     let source = source(&format!("tests/fixtures/{file}"));
     let output = run(&source);

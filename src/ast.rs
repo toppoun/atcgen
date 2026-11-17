@@ -15,6 +15,12 @@ pub(crate) enum GenerateStmt<'a> {
         length: Expr<'a>,
     },
     InitElement(ElementInit<'a>),
+    If {
+        position: Position,
+        condition: Condition<'a>,
+        then_body: Vec<GenerateStmt<'a>>,
+        else_body: Option<Vec<GenerateStmt<'a>>>,
+    },
     For {
         position: Position,
         variable: Name<'a>,
@@ -30,6 +36,12 @@ pub(crate) struct ElementInit<'a> {
 
 pub(crate) enum InputStmt<'a> {
     Row(OutputRow<'a>),
+    If {
+        position: Position,
+        condition: Condition<'a>,
+        then_body: Vec<InputStmt<'a>>,
+        else_body: Option<Vec<InputStmt<'a>>>,
+    },
     RowBlock {
         position: Position,
         body: Vec<InputStmt<'a>>,
@@ -62,6 +74,22 @@ pub(crate) struct RangeExpr<'a, Scalar = Name<'a>, Array = Name<'a>> {
     pub upper: Expr<'a, Scalar, Array>,
     pub end: RangeEnd,
     pub source: &'a str,
+}
+
+pub(crate) struct Condition<'a, Scalar = Name<'a>, Array = Name<'a>> {
+    pub left: Expr<'a, Scalar, Array>,
+    pub op: ComparisonOp,
+    pub right: Expr<'a, Scalar, Array>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ComparisonOp {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
 
 #[derive(Clone, Copy)]

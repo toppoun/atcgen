@@ -888,6 +888,359 @@ fn enforces_output_byte_limit_at_references_and_line_endings() {
     );
 }
 
+#[test]
+fn compares_integers_with_all_six_operators_in_both_blocks() {
+    for (operator, compare) in [
+        ("==", (|a, b| a == b) as fn(i64, i64) -> bool),
+        ("!=", |a, b| a != b),
+        ("<", |a, b| a < b),
+        ("<=", |a, b| a <= b),
+        (">", |a, b| a > b),
+        (">=", |a, b| a >= b),
+    ] {
+        for (left, right) in [(1, 2), (2, 2), (3, 2), (i64::MIN, i64::MAX)] {
+            let generation = format!(
+                "L in {left}..={left}\nR[1]\nR[1] in {right}..={right}\nA[1]\n\
+                 if L{operator}R[1] {{\n A[1] in 7..=7\n}} else {{\n A[1] in 9..=9\n}}"
+            );
+            let input = format!("if L {operator} R[1] {{\n A\n}} else {{\n A[1] A[1]\n}}");
+            let expected = if compare(left, right) { "7\n" } else { "9 9\n" };
+            assert_eq!(generate(&dsl(&generation, &input), 42).unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn permits_optional_else_empty_branches_and_contextual_names() {
+    let generation = "if in 1..=1\nrow in 2..=2\nelse[1]\nelse[1] in 3..=3\n\
+        if_ in 4..=4\nA[1]\nif if == 1 {\n A[1] in 8..=8\n}\n\
+        if if != 1 {\n A[1] in 1..=1\n}\nif 0 == 1 {\n} else {\n}\n\
+        for if_loop in 1..1 {\n}\nfor else in 1..1 {\n}";
+    // `else` above collides with an array even in an empty loop.
+    assert_error(generation, "", "name collision for `else`");
+    let generation = generation.replace("for else in 1..1 {\n}", "");
+    let input = "if row else\nif_\nif if == 1{\n A[1]\n}\n\
+        if if != 1 {\n A[1/0]\n\n}\nif 0 == 1 {\n} else {\n}\n\
+        row {\n if if == 0 {\n  A[1/0]\n }\n}\n\
+        if 1 == 1 {\n\n} else {\n\n}\nelse[1]";
+    assert_eq!(
+        generate(&dsl(&generation, input).replace('\n', "\r\n"), 42).unwrap(),
+        "1 2 3\n4\n8\n\n\n3\n"
+    );
+    let source = dsl(
+        "if[1]\nif[1] in 2..=2\nelse in 5..=5",
+        "if[1] else\nif if[1] == 2 {\n else\n}",
+    );
+    assert_eq!(generate(&source, 42).unwrap(), "2 5\n5\n");
+    assert_eq!(
+        generate(&dsl("", "for if in 1..=1 {\n if if == 1 {\n }\n}"), 42).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn nests_if_and_for_and_preserves_the_current_row() {
+    let generation = "A[4]\nfor i in 1..=2 {\n if i == 1 {\n\
+        for j in 1..=2 {\n A[j] in (i+j)..=(i+j)\n }\n} else {\n\
+        if i*2 == 4 {\n for j in 3..=4 {\n A[j] in j..=j\n }\n }\n}\n}";
+    let input = "if A[1] == 2 {\n for i in 1..=2 {\n row {\n A[i]\n\
+        if i == 1 {\n\n for j in 3..=4 {\n if A[j] >= 3 {\n A[j]\n }\n }\n\
+        } else {\n if i == A[1] {\n A\n }\n }\n A[4]\n }\n }\n}";
+    assert_eq!(
+        generate(&dsl(generation, input), 42).unwrap(),
+        "2 3 4 4\n3 2 3 3 4 4\n"
+    );
+}
+
+#[test]
+fn checks_static_names_types_and_scopes_in_unselected_branches() {
+    for (generation, input, expected) in [
+        (
+            "A[1]\nif 0 == 1 {\n Missing[1] in 1..=1\n}",
+            "",
+            "undefined variable `Missing`",
+        ),
+        (
+            "N in 1..=1\nif 1 == 1 {\n} else {\n N[1] in 1..=1\n}",
+            "",
+            "`N` is a scalar; expected an array",
+        ),
+        (
+            "A[1]\nif 0 == 1 {\n A[1] in Later..=Later\n}\nLater in 1..=1",
+            "",
+            "`Later` is not available",
+        ),
+        (
+            "A[1]\nif 0 == 1 {\n if A == 1 {\n }\n}",
+            "",
+            "`A` is an array; expected a scalar",
+        ),
+        (
+            "",
+            "if 0 == 1 {\n Missing\n}",
+            "undefined variable `Missing`",
+        ),
+        (
+            "N in 1..=1",
+            "if 1 == 1 {\n} else {\n N[1]\n}",
+            "`N` is a scalar; expected an array",
+        ),
+        (
+            "A[1]",
+            "row {\n if 0 == 1 {\n  if A == 0 {\n  }\n }\n}",
+            "`A` is an array; expected a scalar",
+        ),
+        (
+            "",
+            "if 0 == 1 {\n for i in 1..1 {\n  i\n }\n}",
+            "loop variable `i` cannot be output directly",
+        ),
+        (
+            "",
+            "for i in 1..=1 {\n if 0 == 1 {\n  for i in 1..1 {\n  }\n }\n}",
+            "name collision for `i`",
+        ),
+        (
+            "",
+            "if 0 == 1 {\n for i in 1..1 {\n }\n} else {\n if i == 1 {\n }\n}",
+            "loop variable `i` is outside this scope",
+        ),
+        (
+            "",
+            "if 0 == 1 {\n for i in 1..1 {\n }\n}\nif i == 1 {\n}",
+            "loop variable `i` is outside this scope",
+        ),
+        (
+            "N in 1..=1",
+            "if Missing == N {\n}",
+            "undefined variable `Missing`",
+        ),
+    ] {
+        assert_error(generation, input, expected);
+    }
+    // Loops in separate branches have independent scopes.
+    let source = dsl(
+        "if 1 == 1 {\n for i in 1..1 {\n }\n} else {\n for i in 1..1 {\n }\n}",
+        "if 0 == 1 {\n for i in 1..1 {\n }\n} else {\n for i in 1..1 {\n }\n}",
+    );
+    assert_eq!(generate(&source, 42).unwrap(), "");
+}
+
+#[test]
+fn rejects_declarations_and_unsupported_conditional_syntax() {
+    for declaration in ["N in 1..=1", "A[1]"] {
+        for (open, close) in [("if 0 == 1 {", "}"), ("if 1 == 1 {\n} else {", "}")] {
+            assert_error(
+                &format!("{open}\n {declaration}\n{close}"),
+                "",
+                "only array element initialization",
+            );
+        }
+    }
+    for condition in [
+        "1",
+        "1 = 1",
+        "1 === 1",
+        "1 < = 2",
+        "1 < 2 < 3",
+        "1 == 1 == 1",
+        "1 == 1 && 2 == 2",
+        "1 == 1 || 2 == 2",
+        "!1 == 1",
+        "(1 == 1)",
+        "'a' == 'a'",
+    ] {
+        let block = format!("if {condition} {{\n}}");
+        assert!(generate(&dsl(&block, ""), 42).is_err(), "{condition}");
+        assert!(generate(&dsl("", &block), 42).is_err(), "{condition}");
+    }
+    for block in [
+        "else {\n}",
+        "if 1 == 1 {\n}\nelse {\n}",
+        "if 1 == 1 {\n} else if 1 == 1 {\n}",
+        "if 1 == 1 {\n} else {\n} else {\n}",
+        "for i in 1..1 {\n} else {\n}",
+        "if 0 == 1 {\n for i in 1..1 {\n } else {\n }\n}",
+    ] {
+        assert!(generate(&dsl(block, ""), 42).is_err(), "{block}");
+        assert!(generate(&dsl("", block), 42).is_err(), "{block}");
+    }
+    assert_error(
+        "",
+        "row {\n if 0 == 1 {\n  row {\n  }\n }\n}",
+        "nested `row` is not allowed",
+    );
+}
+
+#[test]
+fn skips_runtime_evaluation_and_random_draws_in_unselected_branches() {
+    let bad_generation = "A[2] in 1..=1\nA[1] in 2..=2\nA[1/0] in 1..1\n\
+        A[1] in A[2]..=A[2]\nfor i in 1..=1000001 {\n}\n\
+        if 9223372036854775807+1 == 0 {\n}";
+    let bad_output = "A[2]\nA[1/0]\nfor i in A[2]..=1000001 {\n A\n}\n\
+        if 1%0 == 1 {\n}\nrow {\n A\n}";
+    let straight = dsl("A[1]\nA[1] in 1..=99\nZ in 1..=9999", "A Z");
+    for (open, middle) in [
+        ("if 0 == 1 {", "} else {"),
+        ("if 1 == 1 {\n} else {", "}\nif 1 == 1 {"),
+    ] {
+        let generation =
+            format!("A[1]\n{open}\n{bad_generation}\n{middle}\n A[1] in 1..=99\n}}\nZ in 1..=9999");
+        let input = format!("{open}\n{bad_output}\n{middle}\n A Z\n}}");
+        let branched = dsl(&generation, &input);
+        for seed in [0, 1, 42, 100, u64::MAX] {
+            let expected = generate(&straight, seed).unwrap();
+            assert_eq!(generate(&branched, seed).unwrap(), expected);
+            assert_eq!(generate(&branched, seed).unwrap(), expected);
+        }
+    }
+    // The other branch may contain arbitrarily many draws, without consuming any.
+    let source = dsl(
+        "A[1]\nif 1 == 1 {\n A[1] in 1..=99\n} else {\n\
+         for i in 1..=1000000 {\n A[1] in 0..=0\n }\n}\nZ in 1..=9999",
+        "A Z",
+    );
+    assert_eq!(
+        generate(&source, 42).unwrap(),
+        generate(&straight, 42).unwrap()
+    );
+}
+
+#[test]
+fn evaluates_condition_operands_left_to_right_in_both_blocks() {
+    for (condition, expected) in [
+        ("1/0 == A[1]", "division by zero"),
+        ("A[1] == 1/0", "array element `A[1]` is uninitialized"),
+        ("1 == 1/0", "division by zero"),
+        ("A[2] < 1%0", "index 2 is out of bounds"),
+        ("9223372036854775807+1 > 0", "integer overflow"),
+    ] {
+        let block = format!("if {condition} {{\n}}");
+        assert_error(&format!("A[1]\n{block}"), "", expected);
+        assert_error("A[1]", &block, expected);
+        assert_error("A[1]", &format!("row {{\n{block}\n}}"), expected);
+    }
+    assert_error("A[1]\nif 1/0 == 0 {\n}", "", "3:5: division by zero");
+    assert_error("A[1]", "if 1 == 1/0 {\n}", "5:10: division by zero");
+}
+
+#[test]
+fn tracks_actual_partial_initialization_without_matching_branch_inference() {
+    let generation = "K in 1..=2\nA[2]\nif K == 1 {\n A[1] in 7..=7\n} else {\n A[2] in 9..=9\n}";
+    let source = dsl(generation, "if K == 1 {\n A[1]\n} else {\n A[2]\n}");
+    let mut values = BTreeSet::new();
+    for seed in 0..32 {
+        values.insert(generate(&source, seed).unwrap());
+        let unmatched = dsl(generation, "if K != 1 {\n A[1]\n} else {\n A[2]\n}");
+        assert!(
+            generate(&unmatched, seed)
+                .unwrap_err()
+                .to_string()
+                .contains("uninitialized")
+        );
+        let whole = dsl(generation, "A");
+        assert!(
+            generate(&whole, seed)
+                .unwrap_err()
+                .to_string()
+                .contains("uninitialized")
+        );
+    }
+    assert_eq!(values, BTreeSet::from(["7\n".to_owned(), "9\n".to_owned()]));
+    assert_error(
+        "A[1]\nif 0 == 1 {\n A[1] in 1..=1\n}",
+        "A[1]",
+        "array element `A[1]` is uninitialized",
+    );
+    for selected in ["1 == 1", "0 == 1"] {
+        assert_error(
+            &format!(
+                "A[1]\nA[1] in 1..=1\nif {selected} {{\n A[1] in 2..=2\n}} else {{\n A[1] in 3..=3\n}}"
+            ),
+            "",
+            "array element `A[1]` is already initialized",
+        );
+    }
+    let source = dsl(
+        "A[1]\nif 1 == 1 {\n A[1] in 5..=5\n}\nN in A[1]..=A[1]",
+        "if N == A[1] {\n A N\n}",
+    );
+    assert_eq!(generate(&source, 42).unwrap(), "5 5\n");
+}
+
+#[test]
+fn counts_if_for_and_row_together_at_the_control_depth_limit() {
+    let nested = |depth: usize, leaf: &str| {
+        let headers: String = (0..depth)
+            .map(|i| {
+                if i % 2 == 0 {
+                    "if 1 == 1 {\n".to_owned()
+                } else {
+                    format!("for i{i} in 1..=1 {{\n")
+                }
+            })
+            .collect();
+        format!("{headers}{leaf}{}", "}\n".repeat(depth))
+            .trim_end()
+            .to_owned()
+    };
+    let generation = format!("A[1]\n{}", nested(32, "A[1] in 6..=6\n"));
+    let input = nested(31, "row {\n A\n}\n");
+    assert_eq!(generate(&dsl(&generation, &input), 42).unwrap(), "6\n");
+    assert_error(&nested(33, ""), "", "control nesting limit exceeded (32)");
+    assert_error("", &nested(33, ""), "control nesting limit exceeded (32)");
+    assert_error(
+        "",
+        &nested(32, "row {\n}\n"),
+        "control nesting limit exceeded (32)",
+    );
+    // Else occupies the same depth as its corresponding if, including all-false paths.
+    let elses = |depth| {
+        format!(
+            "{}{}",
+            "if 0 == 1 {\n} else {\n".repeat(depth),
+            "}\n".repeat(depth)
+        )
+        .trim_end()
+        .to_owned()
+    };
+    assert_eq!(generate(&dsl(&elses(32), &elses(32)), 42).unwrap(), "");
+    assert_error(&elses(33), "", "control nesting limit exceeded (32)");
+    // The parser checks depth even when the path is never executed.
+    assert_error(
+        "",
+        &format!("if 0 == 1 {{\n{}\n}}", nested(32, "")),
+        "control nesting limit exceeded (32)",
+    );
+}
+
+#[test]
+fn charges_only_executed_branch_work_and_enforces_the_exact_budget() {
+    let near = "for i in 1..=10 {\n for j in 1..=999997 {\n }\n}";
+    let branch = |extra| {
+        format!(
+            "if 1 == 1 {{\n{near}\nfor k in 1..={extra} {{\n}}\n}} else {{\n{}\n}}",
+            "for unused in 1..=1000000 {\n}\n".repeat(11)
+        )
+    };
+    // 1 if + 9,999,991 nested-loop work + 1 for + 7 iterations.
+    assert_eq!(generate(&dsl(&branch(7), &branch(7)), 42).unwrap(), "");
+    assert_error(&branch(8), "", "execution work limit exceeded (10000000)");
+    assert_error("", &branch(8), "execution work limit exceeded (10000000)");
+    let legacy = "for i in 1..=1000000 {\n}\n".repeat(11);
+    let extended = format!("{legacy}if 0 == 1 {{\n}}");
+    assert_error(&extended, "", "execution work limit exceeded (10000000)");
+    assert_error("", &extended, "execution work limit exceeded (10000000)");
+    for input in [false, true] {
+        let block = "if 1 == 1 {\n for i in 1..=1000001 {\n }\n}";
+        if input {
+            assert_error("", block, "loop iteration limit exceeded (1000000)");
+        } else {
+            assert_error(block, "", "loop iteration limit exceeded (1000000)");
+        }
+    }
+}
+
 fn parse_integers(line: &str) -> Vec<i64> {
     line.split_ascii_whitespace()
         .map(|value| value.parse().unwrap())

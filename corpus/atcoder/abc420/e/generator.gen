@@ -1,32 +1,27 @@
 generate {
-    N in 1..=64
-    EdgeCount in 0..=(N-1)
-    VertexQueryCount in 1..=64
-    Q in (EdgeCount+VertexQueryCount)..=(EdgeCount+VertexQueryCount)
-    AddEdge in 1..=1
-    U[EdgeCount+1]
-    V[EdgeCount+1]
-    Type[VertexQueryCount]
-    Vertex[VertexQueryCount]
-    for i in 1..=EdgeCount {
-        U[i] in 1..=i
-        V[i] in (i+1)..=(i+1)
-    }
-    for i in 1..VertexQueryCount {
-        Type[i] in 2..=3
-    }
-    Type[VertexQueryCount] in 3..=3
-    for i in 1..=VertexQueryCount {
-        Vertex[i] in 1..=N
+    N in 2..=65
+    Q in 1..=(N-1)
+    Kind[Q]
+    U[Q]
+    V[Q]
+    for i in 1..=Q {
+        Kind[i] in 1..=3
+        if Kind[i] == 1 {
+            U[i] in 1..=i
+            V[i] in (i+1)..=(i+1)
+        } else {
+            V[i] in 1..=N
+        }
     }
 }
 
 input {
     N Q
-    for i in 1..=EdgeCount {
-        AddEdge U[i] V[i]
-    }
-    for i in 1..=VertexQueryCount {
-        Type[i] Vertex[i]
+    for i in 1..=Q {
+        if Kind[i] == 1 {
+            Kind[i] U[i] V[i]
+        } else {
+            Kind[i] V[i]
+        }
     }
 }

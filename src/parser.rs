@@ -1,7 +1,7 @@
 use crate::Error;
 use crate::ast::{
-    BinaryOp, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InputStmt, Located, Name,
-    OutputRef, OutputRow, Program, RangeEnd, RangeExpr, UnaryOp,
+    BinaryOp, ComparisonOp, Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt,
+    InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeEnd, RangeExpr, UnaryOp,
 };
 use crate::error::Position;
 
@@ -26,9 +26,9 @@ pub(crate) fn parse(source: &str) -> Result<Program<'_>, Error> {
     };
 
     next_line("`generate {`", false)?.block_header("generate")?;
-    let generate = generate_body(&mut next_line, 0)?;
+    let (generate, _) = generate_body(&mut next_line, 0, false)?;
     next_line("`input {`", false)?.block_header("input")?;
-    let input = input_body(&mut next_line, 0, false)?;
+    let (input, _) = input_body(&mut next_line, 0, false, false)?;
 
     if let Some(line) = lines.find(|line| !line.remaining().is_empty()) {
         return Err(Error::at(
@@ -42,18 +42,18 @@ pub(crate) fn parse(source: &str) -> Result<Program<'_>, Error> {
 fn generate_body<'a>(
     next_line: &mut impl FnMut(&str, bool) -> Result<Line<'a>, Error>,
     depth: usize,
-) -> Result<Vec<GenerateStmt<'a>>, Error> {
+    allow_else: bool,
+) -> Result<(Vec<GenerateStmt<'a>>, bool), Error> {
     let expected = if depth == 0 {
-        "a generation operation, `for`, or `}`"
+        "a generation operation, `for`, `if`, or `}`"
     } else {
-        "an element initialization, `for`, or `}`"
+        "an element initialization, `for`, `if`, or `}`"
     };
     let mut body = Vec::new();
     loop {
         let mut line = next_line(expected, false)?;
         if line.consume("}") {
-            line.finish()?;
-            return Ok(body);
+            return Ok((body, line.close_block(allow_else)?));
         }
         if line.starts_keyword("for") {
             let position = line.position();
@@ -63,7 +63,23 @@ fn generate_body<'a>(
                 position,
                 variable,
                 range,
-                body: generate_body(next_line, depth + 1)?,
+                body: generate_body(next_line, depth + 1, false)?.0,
+            });
+        } else if line.is_if_header() {
+            let position = line.position();
+            check_control_depth(depth, position)?;
+            let condition = line.if_header()?;
+            let (then_body, has_else) = generate_body(next_line, depth + 1, true)?;
+            let else_body = if has_else {
+                Some(generate_body(next_line, depth + 1, false)?.0)
+            } else {
+                None
+            };
+            body.push(GenerateStmt::If {
+                position,
+                condition,
+                then_body,
+                else_body,
             });
         } else {
             let position = line.position();
@@ -71,7 +87,7 @@ fn generate_body<'a>(
             if depth != 0 && !matches!(statement, GenerateStmt::InitElement(_)) {
                 return Err(Error::at(
                     position,
-                    "only array element initialization and nested `for` are allowed in a generate loop",
+                    "only array element initialization, `for`, and `if` are allowed in a generate control block",
                 ));
             }
             body.push(statement);
@@ -83,13 +99,13 @@ fn input_body<'a>(
     next_line: &mut impl FnMut(&str, bool) -> Result<Line<'a>, Error>,
     depth: usize,
     in_row: bool,
-) -> Result<Vec<InputStmt<'a>>, Error> {
+    allow_else: bool,
+) -> Result<(Vec<InputStmt<'a>>, bool), Error> {
     let mut body = Vec::new();
     loop {
-        let mut line = next_line("an output line, `for`, `row`, or `}`", !in_row)?;
+        let mut line = next_line("an output line, `for`, `if`, `row`, or `}`", !in_row)?;
         if line.consume("}") {
-            line.finish()?;
-            return Ok(body);
+            return Ok((body, line.close_block(allow_else)?));
         }
         if line.starts_keyword("for") {
             let position = line.position();
@@ -99,7 +115,23 @@ fn input_body<'a>(
                 position,
                 variable,
                 range,
-                body: input_body(next_line, depth + 1, in_row)?,
+                body: input_body(next_line, depth + 1, in_row, false)?.0,
+            });
+        } else if line.is_if_header() {
+            let position = line.position();
+            check_control_depth(depth, position)?;
+            let condition = line.if_header()?;
+            let (then_body, has_else) = input_body(next_line, depth + 1, in_row, true)?;
+            let else_body = if has_else {
+                Some(input_body(next_line, depth + 1, in_row, false)?.0)
+            } else {
+                None
+            };
+            body.push(InputStmt::If {
+                position,
+                condition,
+                then_body,
+                else_body,
             });
         } else if line
             .remaining()
@@ -113,7 +145,7 @@ fn input_body<'a>(
             check_control_depth(depth, position)?;
             body.push(InputStmt::RowBlock {
                 position,
-                body: input_body(next_line, depth + 1, true)?,
+                body: input_body(next_line, depth + 1, true, false)?.0,
             });
         } else {
             body.push(InputStmt::Row(line.output_row()?));
@@ -198,6 +230,46 @@ impl<'a> Line<'a> {
         self.keyword(name)?;
         self.expect("{")?;
         self.finish()
+    }
+
+    // `else` is recognized only on the closing line of its matching `if`.
+    fn close_block(&mut self, allow_else: bool) -> Result<bool, Error> {
+        if allow_else && self.starts_keyword("else") {
+            self.block_header("else")?;
+            Ok(true)
+        } else {
+            self.finish()?;
+            Ok(false)
+        }
+    }
+
+    fn is_if_header(&self) -> bool {
+        self.starts_keyword("if")
+            && self
+                .remaining()
+                .trim_end_matches([' ', '\t'])
+                .ends_with('{')
+    }
+
+    fn if_header(&mut self) -> Result<Condition<'a>, Error> {
+        self.keyword("if")?;
+        let left = self.expression(0)?;
+        let position = self.position();
+        let op = [
+            ("==", ComparisonOp::Equal),
+            ("!=", ComparisonOp::NotEqual),
+            ("<=", ComparisonOp::LessEqual),
+            (">=", ComparisonOp::GreaterEqual),
+            ("<", ComparisonOp::Less),
+            (">", ComparisonOp::Greater),
+        ]
+        .into_iter()
+        .find_map(|(token, op)| self.consume(token).then_some(op))
+        .ok_or_else(|| Error::at(position, "expected an integer comparison operator"))?;
+        let right = self.expression(0)?;
+        self.expect("{")?;
+        self.finish()?;
+        Ok(Condition { left, op, right })
     }
 
     fn identifier(&mut self) -> Result<Name<'a>, Error> {

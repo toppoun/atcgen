@@ -1,9 +1,9 @@
 use crate::Error;
-use crate::ast::{BinaryOp, ExprNode, Located, Name, RangeEnd, UnaryOp};
+use crate::ast::{BinaryOp, ComparisonOp, ExprNode, Located, Name, RangeEnd, UnaryOp};
 use crate::error::Position;
 use crate::validation::{
-    ArrayRef, BoundElement, BoundElementInit, BoundExpr, BoundGenerateStmt, BoundNode, BoundRange,
-    ScalarRef,
+    ArrayRef, BoundCondition, BoundElement, BoundElementInit, BoundExpr, BoundGenerateStmt,
+    BoundNode, BoundRange, ScalarRef,
 };
 
 const MAX_ARRAY_ELEMENTS: usize = 1_000_000;
@@ -54,13 +54,15 @@ pub(crate) fn generate(
         array_elements: 0,
         generated_integers: 0,
     };
-    let limited = statements.iter().any(|statement| {
-        if let BoundGenerateStmt::For { body, .. } = statement {
-            body.iter()
-                .any(|item| matches!(item, BoundGenerateStmt::For { .. }))
-        } else {
-            false
-        }
+    let limited = statements.iter().any(|statement| match statement {
+        BoundGenerateStmt::If { .. } => true,
+        BoundGenerateStmt::For { body, .. } => body.iter().any(|item| {
+            matches!(
+                item,
+                BoundGenerateStmt::For { .. } | BoundGenerateStmt::If { .. }
+            )
+        }),
+        _ => false,
     });
     generator.execute(statements, &mut Vec::new(), &mut WorkBudget::new(limited))?;
     Ok(generator.values)
@@ -83,6 +85,19 @@ impl Generator {
                 }
                 BoundGenerateStmt::Array { length, .. } => self.declare_array(length)?,
                 BoundGenerateStmt::InitElement(init) => self.init_element(init, loop_values)?,
+                BoundGenerateStmt::If {
+                    condition,
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    let body = if self.evaluation(loop_values).condition(condition)? {
+                        then_body.as_slice()
+                    } else {
+                        else_body.as_deref().unwrap_or_default()
+                    };
+                    self.execute(body, loop_values, work)?;
+                }
                 BoundGenerateStmt::For { range, body, .. } => {
                     let iterations = self.evaluation(loop_values).iterations(range, work)?;
                     if !body.is_empty() {
@@ -182,6 +197,19 @@ pub(crate) struct Evaluation<'values> {
 }
 
 impl Evaluation<'_> {
+    pub(crate) fn condition(&self, condition: &BoundCondition<'_>) -> Result<bool, Error> {
+        let left = self.evaluate(&condition.left)?;
+        let right = self.evaluate(&condition.right)?;
+        Ok(match condition.op {
+            ComparisonOp::Equal => left == right,
+            ComparisonOp::NotEqual => left != right,
+            ComparisonOp::Less => left < right,
+            ComparisonOp::LessEqual => left <= right,
+            ComparisonOp::Greater => left > right,
+            ComparisonOp::GreaterEqual => left >= right,
+        })
+    }
+
     fn range_bounds(&self, range: &BoundRange<'_>) -> Result<(i64, i64, i128), Error> {
         let lower = self.evaluate(&range.lower)?;
         let upper = self.evaluate(&range.upper)?;

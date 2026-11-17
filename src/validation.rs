@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::Error;
 use crate::ast::{
-    ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InputStmt, Located, Name, OutputRef,
-    OutputRow, Program, RangeExpr,
+    Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InputStmt, Located, Name,
+    OutputRef, OutputRow, Program, RangeExpr,
 };
 use crate::error::Position;
 
@@ -23,6 +23,12 @@ pub(crate) enum BoundGenerateStmt<'a> {
         length: BoundExpr<'a>,
     },
     InitElement(BoundElementInit<'a>),
+    If {
+        position: Position,
+        condition: BoundCondition<'a>,
+        then_body: Vec<BoundGenerateStmt<'a>>,
+        else_body: Option<Vec<BoundGenerateStmt<'a>>>,
+    },
     For {
         position: Position,
         range: BoundRange<'a>,
@@ -35,7 +41,7 @@ impl BoundGenerateStmt<'_> {
         match self {
             Self::Scalar { name, .. } | Self::Array { name, .. } => name.position,
             Self::InitElement(init) => init.target.array.name.position,
-            Self::For { position, .. } => *position,
+            Self::For { position, .. } | Self::If { position, .. } => *position,
         }
     }
 }
@@ -47,6 +53,12 @@ pub(crate) struct BoundElementInit<'a> {
 
 pub(crate) enum BoundInputStmt<'a> {
     Row(BoundRow<'a>),
+    If {
+        position: Position,
+        condition: BoundCondition<'a>,
+        then_body: Vec<BoundInputStmt<'a>>,
+        else_body: Option<Vec<BoundInputStmt<'a>>>,
+    },
     RowBlock {
         position: Position,
         body: Vec<BoundInputStmt<'a>>,
@@ -62,7 +74,9 @@ impl BoundInputStmt<'_> {
     pub(crate) fn position(&self) -> Position {
         match self {
             Self::Row(row) => row.position,
-            Self::RowBlock { position, .. } | Self::For { position, .. } => *position,
+            Self::RowBlock { position, .. }
+            | Self::For { position, .. }
+            | Self::If { position, .. } => *position,
         }
     }
 }
@@ -93,6 +107,7 @@ pub(crate) struct ArrayRef<'a> {
 pub(crate) type BoundElement<'a> = ElementRef<'a, ScalarRef, ArrayRef<'a>>;
 pub(crate) type BoundExpr<'a> = Expr<'a, ScalarRef, ArrayRef<'a>>;
 pub(crate) type BoundRange<'a> = RangeExpr<'a, ScalarRef, ArrayRef<'a>>;
+pub(crate) type BoundCondition<'a> = Condition<'a, ScalarRef, ArrayRef<'a>>;
 pub(crate) type BoundNode<'a> = ExprNode<'a, ScalarRef, ArrayRef<'a>>;
 
 #[derive(Clone, Copy)]
@@ -148,6 +163,16 @@ impl<'a> Names<'a> {
                     self.register_loop(*variable)?;
                     self.register_generate(body)?;
                 }
+                GenerateStmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    self.register_generate(then_body)?;
+                    if let Some(body) = else_body {
+                        self.register_generate(body)?;
+                    }
+                }
                 GenerateStmt::InitElement(_) => {}
             }
         }
@@ -162,6 +187,16 @@ impl<'a> Names<'a> {
                     self.register_input(body)?;
                 }
                 InputStmt::RowBlock { body, .. } => self.register_input(body)?,
+                InputStmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    self.register_input(then_body)?;
+                    if let Some(body) = else_body {
+                        self.register_input(body)?;
+                    }
+                }
                 InputStmt::Row(_) => {}
             }
         }
@@ -229,6 +264,17 @@ impl<'a> Resolver<'_, 'a> {
                 BoundGenerateStmt::Array { name, length }
             }
             GenerateStmt::InitElement(init) => BoundGenerateStmt::InitElement(self.init(init)?),
+            GenerateStmt::If {
+                position,
+                condition,
+                then_body,
+                else_body,
+            } => BoundGenerateStmt::If {
+                position,
+                condition: self.condition(condition)?,
+                then_body: self.generate_body(then_body)?,
+                else_body: else_body.map(|body| self.generate_body(body)).transpose()?,
+            },
             GenerateStmt::For {
                 position,
                 variable,
@@ -261,6 +307,17 @@ impl<'a> Resolver<'_, 'a> {
     fn input_stmt(&mut self, statement: InputStmt<'a>) -> Result<BoundInputStmt<'a>, Error> {
         Ok(match statement {
             InputStmt::Row(row) => BoundInputStmt::Row(self.row(row)?),
+            InputStmt::If {
+                position,
+                condition,
+                then_body,
+                else_body,
+            } => BoundInputStmt::If {
+                position,
+                condition: self.condition(condition)?,
+                then_body: self.input_body(then_body)?,
+                else_body: else_body.map(|body| self.input_body(body)).transpose()?,
+            },
             InputStmt::RowBlock { position, body } => BoundInputStmt::RowBlock {
                 position,
                 body: self.input_body(body)?,
@@ -347,6 +404,14 @@ impl<'a> Resolver<'_, 'a> {
             upper: self.expr(range.upper)?,
             end: range.end,
             source: range.source,
+        })
+    }
+
+    fn condition(&self, condition: Condition<'a>) -> Result<BoundCondition<'a>, Error> {
+        Ok(BoundCondition {
+            left: self.expr(condition.left)?,
+            op: condition.op,
+            right: self.expr(condition.right)?,
         })
     }
 
