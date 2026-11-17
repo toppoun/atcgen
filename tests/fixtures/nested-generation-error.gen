@@ -1,0 +1,12 @@
+generate {
+    A[2]
+    for i in 1..=2 {
+        for j in i..=i {
+            A[j] in i..=1
+        }
+    }
+}
+
+input {
+    A
+}

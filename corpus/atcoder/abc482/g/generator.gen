@@ -1,46 +1,40 @@
 generate {
-    T in 2..=2
-    N1 in 2..=16
-    M1 in 1..=(N1-1)
-    A1[N1]
-    U1[M1]
-    V1[M1]
-    for i in 1..=N1 {
-        A1[i] in 1..=(N1-1)
-    }
-    for i in 1..=M1 {
-        U1[i] in 1..=i
-        V1[i] in (i+1)..=(i+1)
-    }
-
-    N2 in 3..=16
-    M2 in (N2-1)..=(2*N2-3)
-    A2[N2]
-    U2[M2]
-    V2[M2]
-    for i in 1..=N2 {
-        A2[i] in 1..=(N2-1)
-    }
-    for i in 1..N2 {
-        U2[i] in 1..=1
-        V2[i] in (i+1)..=(i+1)
-    }
-    for i in N2..=M2 {
-        U2[i] in 2..=2
-        V2[i] in (i-N2+3)..=(i-N2+3)
+    T in 1..=10
+    MaxN in 15..=15
+    MaxM in (MaxN*(MaxN-1)/2)..=(MaxN*(MaxN-1)/2)
+    N[T]
+    M[T]
+    First[T]
+    A[T*MaxN]
+    U[T*MaxM]
+    V[T*MaxM]
+    for t in 1..=T {
+        N[t] in 2..=MaxN
+        M[t] in 1..=(N[t]*(N[t]-1)/2)
+        First[t] in 1..=(N[t]*(N[t]-1)/2-M[t]+1)
+        for i in 1..=N[t] {
+            A[(t-1)*MaxN+i] in 1..=(N[t]-1)
+        }
+        for v in 2..=N[t] {
+            for u in 1..v {
+                U[(t-1)*MaxM+(v-1)*(v-2)/2+u] in u..=u
+                V[(t-1)*MaxM+(v-1)*(v-2)/2+u] in v..=v
+            }
+        }
     }
 }
 
 input {
     T
-    N1 M1
-    A1
-    for i in 1..=M1 {
-        U1[i] V1[i]
-    }
-    N2 M2
-    A2
-    for i in 1..=M2 {
-        U2[i] V2[i]
+    for t in 1..=T {
+        N[t] M[t]
+        row {
+            for i in 1..=N[t] {
+                A[(t-1)*MaxN+i]
+            }
+        }
+        for e in First[t]..(First[t]+M[t]) {
+            U[(t-1)*MaxM+e] V[(t-1)*MaxM+e]
+        }
     }
 }

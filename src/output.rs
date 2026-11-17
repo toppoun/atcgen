@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use crate::Error;
 use crate::error::Position;
-use crate::generator::{Evaluation, Value, initialized_element};
+use crate::generator::{Evaluation, Value, WorkBudget, initialized_element};
 use crate::validation::{BoundInputStmt, BoundOutputRef, BoundRow};
 
 const MAX_OUTPUT_INTEGERS: usize = 1_000_000;
@@ -20,36 +20,73 @@ pub(crate) fn validate(
     statements: &[BoundInputStmt<'_>],
     values: &[Value],
 ) -> Result<VerifiedOutput, Error> {
-    let outer = Evaluation {
-        values,
-        loop_value: None,
-    };
+    let limited = statements.iter().any(|statement| match statement {
+        BoundInputStmt::Row(_) => false,
+        BoundInputStmt::RowBlock { .. } => true,
+        BoundInputStmt::For { body, .. } => body
+            .iter()
+            .any(|item| !matches!(item, BoundInputStmt::Row(_))),
+    });
     let mut output = VerifiedOutput::default();
-    for statement in statements {
-        match statement {
-            BoundInputStmt::Row(row) => output.row(row, &outer)?,
-            BoundInputStmt::For { range, rows } => {
-                let iterations = outer.iterations(range)?;
-                if !rows.is_empty() {
-                    for index in iterations {
-                        let evaluation = Evaluation {
-                            values,
-                            loop_value: Some(index),
-                        };
-                        for row in rows {
-                            output.row(row, &evaluation)?;
+    output.execute(
+        statements,
+        values,
+        &mut Vec::new(),
+        &mut WorkBudget::new(limited),
+        None,
+    )?;
+    Ok(output)
+}
+
+impl VerifiedOutput {
+    fn execute(
+        &mut self,
+        statements: &[BoundInputStmt<'_>],
+        values: &[Value],
+        loop_values: &mut Vec<i64>,
+        work: &mut WorkBudget,
+        row_start: Option<usize>,
+    ) -> Result<(), Error> {
+        for statement in statements {
+            work.charge(1, statement.position())?;
+            let evaluation = Evaluation {
+                values,
+                loop_values,
+            };
+            match statement {
+                BoundInputStmt::Row(row) => {
+                    let start = row_start.unwrap_or(self.integers.len());
+                    self.append(row, &evaluation, start)?;
+                    if row_start.is_none() {
+                        self.end_row(row.position)?;
+                    }
+                }
+                BoundInputStmt::RowBlock { position, body } => {
+                    let start = self.integers.len();
+                    self.execute(body, values, loop_values, work, Some(start))?;
+                    self.end_row(*position)?;
+                }
+                BoundInputStmt::For { range, body, .. } => {
+                    let iterations = evaluation.iterations(range, work)?;
+                    if !body.is_empty() {
+                        for index in iterations {
+                            loop_values.push(index);
+                            self.execute(body, values, loop_values, work, row_start)?;
+                            loop_values.pop();
                         }
                     }
                 }
             }
         }
+        Ok(())
     }
-    Ok(output)
-}
 
-impl VerifiedOutput {
-    fn row(&mut self, row: &BoundRow<'_>, evaluation: &Evaluation<'_>) -> Result<(), Error> {
-        let start = self.integers.len();
+    fn append(
+        &mut self,
+        row: &BoundRow<'_>,
+        evaluation: &Evaluation<'_>,
+        start: usize,
+    ) -> Result<(), Error> {
         for item in &row.items {
             let position = item.position;
             let value = match &item.value {
@@ -69,7 +106,11 @@ impl VerifiedOutput {
             self.add_value(value, start, position)?;
         }
 
-        self.add_bytes(1, row.position)?;
+        Ok(())
+    }
+
+    fn end_row(&mut self, position: Position) -> Result<(), Error> {
+        self.add_bytes(1, position)?;
         self.row_ends
             .push(u32::try_from(self.integers.len()).expect("output integer count is bounded"));
         Ok(())

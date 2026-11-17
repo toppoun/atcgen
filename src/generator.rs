@@ -1,5 +1,6 @@
 use crate::Error;
 use crate::ast::{BinaryOp, ExprNode, Located, Name, RangeEnd, UnaryOp};
+use crate::error::Position;
 use crate::validation::{
     ArrayRef, BoundElement, BoundElementInit, BoundExpr, BoundGenerateStmt, BoundNode, BoundRange,
     ScalarRef,
@@ -8,6 +9,27 @@ use crate::validation::{
 const MAX_ARRAY_ELEMENTS: usize = 1_000_000;
 const MAX_GENERATED_INTEGERS: usize = 1_000_000;
 const MAX_LOOP_ITERATIONS: i128 = 1_000_000;
+const MAX_EXECUTION_WORK: usize = 10_000_000;
+
+pub(crate) struct WorkBudget(Option<usize>);
+
+impl WorkBudget {
+    pub(crate) fn new(limited: bool) -> Self {
+        Self(limited.then_some(MAX_EXECUTION_WORK))
+    }
+
+    pub(crate) fn charge(&mut self, units: usize, position: Position) -> Result<(), Error> {
+        if let Some(remaining) = &mut self.0 {
+            *remaining = remaining.checked_sub(units).ok_or_else(|| {
+                Error::at(
+                    position,
+                    format!("execution work limit exceeded ({MAX_EXECUTION_WORK})"),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) enum Value {
     Scalar(i64),
@@ -32,40 +54,59 @@ pub(crate) fn generate(
         array_elements: 0,
         generated_integers: 0,
     };
-    for statement in statements {
-        match statement {
-            BoundGenerateStmt::Scalar { name, range } => {
-                let (lower, width) = generator.evaluation(None).nonempty_range(range)?;
-                let value = generator.sample(*name, lower, width)?;
-                generator.values.push(Value::Scalar(value));
-            }
-            BoundGenerateStmt::Array(length) => generator.declare_array(length)?,
-            BoundGenerateStmt::InitElement(init) => generator.init_element(init, None)?,
-            BoundGenerateStmt::For { range, body } => {
-                let iterations = generator.evaluation(None).iterations(range)?;
-                if !body.is_empty() {
-                    for index in iterations {
-                        for init in body {
-                            generator.init_element(init, Some(index))?;
+    let limited = statements.iter().any(|statement| {
+        if let BoundGenerateStmt::For { body, .. } = statement {
+            body.iter()
+                .any(|item| matches!(item, BoundGenerateStmt::For { .. }))
+        } else {
+            false
+        }
+    });
+    generator.execute(statements, &mut Vec::new(), &mut WorkBudget::new(limited))?;
+    Ok(generator.values)
+}
+
+impl Generator {
+    fn execute(
+        &mut self,
+        statements: &[BoundGenerateStmt<'_>],
+        loop_values: &mut Vec<i64>,
+        work: &mut WorkBudget,
+    ) -> Result<(), Error> {
+        for statement in statements {
+            work.charge(1, statement.position())?;
+            match statement {
+                BoundGenerateStmt::Scalar { name, range } => {
+                    let (lower, width) = self.evaluation(loop_values).nonempty_range(range)?;
+                    let value = self.sample(*name, lower, width)?;
+                    self.values.push(Value::Scalar(value));
+                }
+                BoundGenerateStmt::Array { length, .. } => self.declare_array(length)?,
+                BoundGenerateStmt::InitElement(init) => self.init_element(init, loop_values)?,
+                BoundGenerateStmt::For { range, body, .. } => {
+                    let iterations = self.evaluation(loop_values).iterations(range, work)?;
+                    if !body.is_empty() {
+                        for index in iterations {
+                            loop_values.push(index);
+                            self.execute(body, loop_values, work)?;
+                            loop_values.pop();
                         }
                     }
                 }
             }
         }
+        Ok(())
     }
-    Ok(generator.values)
-}
 
-impl Generator {
-    fn evaluation(&self, loop_value: Option<i64>) -> Evaluation<'_> {
+    fn evaluation<'values>(&'values self, loop_values: &'values [i64]) -> Evaluation<'values> {
         Evaluation {
             values: &self.values,
-            loop_value,
+            loop_values,
         }
     }
 
     fn declare_array(&mut self, expr: &BoundExpr<'_>) -> Result<(), Error> {
-        let length = self.evaluation(None).evaluate(expr)?;
+        let length = self.evaluation(&[]).evaluate(expr)?;
         if length <= 0 {
             return Err(Error::at(
                 expr.position,
@@ -98,9 +139,9 @@ impl Generator {
     fn init_element(
         &mut self,
         init: &BoundElementInit<'_>,
-        loop_value: Option<i64>,
+        loop_values: &[i64],
     ) -> Result<(), Error> {
-        let evaluation = self.evaluation(loop_value);
+        let evaluation = self.evaluation(loop_values);
         let target = &init.target;
         let array = target.array;
         let offset = evaluation.offset(target)?;
@@ -137,7 +178,7 @@ impl Generator {
 
 pub(crate) struct Evaluation<'values> {
     pub values: &'values [Value],
-    pub loop_value: Option<i64>,
+    pub loop_values: &'values [i64],
 }
 
 impl Evaluation<'_> {
@@ -170,6 +211,7 @@ impl Evaluation<'_> {
     pub(crate) fn iterations(
         &self,
         range: &BoundRange<'_>,
+        work: &mut WorkBudget,
     ) -> Result<impl Iterator<Item = i64> + use<>, Error> {
         let (lower, _, width) = self.range_bounds(range)?;
         if width > MAX_LOOP_ITERATIONS {
@@ -182,6 +224,10 @@ impl Evaluation<'_> {
             ));
         }
         let count = i64::try_from(width.max(0)).expect("loop width is bounded");
+        work.charge(
+            usize::try_from(count).expect("loop width fits in usize"),
+            range.upper.position,
+        )?;
         // The last offset stays within the evaluated upper bound, including i64::MAX.
         Ok((0..count).map(move |offset| lower + offset))
     }
@@ -232,7 +278,7 @@ impl Evaluation<'_> {
             ExprNode::Literal(value) => Ok(*value),
             ExprNode::Variable(reference) => Ok(match reference {
                 ScalarRef::Global(slot) => self.scalar(*slot),
-                ScalarRef::LoopIndex => self.loop_value.expect("loop variable is in scope"),
+                ScalarRef::LoopIndex(index) => self.loop_values[*index],
             }),
             ExprNode::Element(element) => self.element(element),
             ExprNode::Unary { op, operand } => {

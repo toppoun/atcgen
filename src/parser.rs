@@ -6,13 +6,14 @@ use crate::ast::{
 use crate::error::Position;
 
 const MAX_EXPRESSION_NESTING: usize = 128;
+const MAX_CONTROL_NESTING: usize = 32;
 
 pub(crate) fn parse(source: &str) -> Result<Program<'_>, Error> {
     let mut lines = source
         .split_inclusive('\n')
         .enumerate()
         .map(|(index, text)| Line::new(index + 1, text));
-    let mut next_line = |expected, keep_blank| {
+    let mut next_line = |expected: &str, keep_blank| {
         lines
             .find(|line| keep_blank || !line.remaining().is_empty())
             .ok_or_else(|| {
@@ -25,74 +26,9 @@ pub(crate) fn parse(source: &str) -> Result<Program<'_>, Error> {
     };
 
     next_line("`generate {`", false)?.block_header("generate")?;
-    let mut generate = Vec::new();
-    loop {
-        let mut line = next_line("a generation operation, `for`, or `}`", false)?;
-        if line.consume("}") {
-            line.finish()?;
-            break;
-        }
-        if line.starts_keyword("for") {
-            let (variable, range) = line.for_header()?;
-            let mut body = Vec::new();
-            loop {
-                let mut line = next_line("an element initialization or `}`", false)?;
-                if line.consume("}") {
-                    line.finish()?;
-                    break;
-                }
-                line.reject_nested_for()?;
-                match line.generate_line()? {
-                    GenerateStmt::InitElement(init) => body.push(init),
-                    GenerateStmt::GenerateScalar { name, .. }
-                    | GenerateStmt::DeclareArray { name, .. } => {
-                        return Err(Error::at(
-                            name.position,
-                            "only array element initialization is allowed in a generate loop",
-                        ));
-                    }
-                    GenerateStmt::For { .. } => unreachable!(),
-                }
-            }
-            generate.push(GenerateStmt::For {
-                variable,
-                range,
-                body,
-            });
-        } else {
-            generate.push(line.generate_line()?);
-        }
-    }
-
+    let generate = generate_body(&mut next_line, 0)?;
     next_line("`input {`", false)?.block_header("input")?;
-    let mut input = Vec::new();
-    loop {
-        let mut line = next_line("an output line, `for`, or `}`", true)?;
-        if line.consume("}") {
-            line.finish()?;
-            break;
-        }
-        if line.starts_keyword("for") {
-            let (variable, range) = line.for_header()?;
-            let mut rows = Vec::new();
-            loop {
-                let mut line = next_line("an output line or `}`", true)?;
-                if line.consume("}") {
-                    line.finish()?;
-                    break;
-                }
-                line.reject_nested_for()?;
-                rows.push(line.output_row()?);
-            }
-            input.push(InputStmt::For {
-                variable,
-                range,
-                rows,
-            });
-        } else {
-            input.push(InputStmt::Row(line.output_row()?));
-        }
-    }
+    let input = input_body(&mut next_line, 0, false)?;
 
     if let Some(line) = lines.find(|line| !line.remaining().is_empty()) {
         return Err(Error::at(
@@ -101,6 +37,98 @@ pub(crate) fn parse(source: &str) -> Result<Program<'_>, Error> {
         ));
     }
     Ok(Program { generate, input })
+}
+
+fn generate_body<'a>(
+    next_line: &mut impl FnMut(&str, bool) -> Result<Line<'a>, Error>,
+    depth: usize,
+) -> Result<Vec<GenerateStmt<'a>>, Error> {
+    let expected = if depth == 0 {
+        "a generation operation, `for`, or `}`"
+    } else {
+        "an element initialization, `for`, or `}`"
+    };
+    let mut body = Vec::new();
+    loop {
+        let mut line = next_line(expected, false)?;
+        if line.consume("}") {
+            line.finish()?;
+            return Ok(body);
+        }
+        if line.starts_keyword("for") {
+            let position = line.position();
+            check_control_depth(depth, position)?;
+            let (variable, range) = line.for_header()?;
+            body.push(GenerateStmt::For {
+                position,
+                variable,
+                range,
+                body: generate_body(next_line, depth + 1)?,
+            });
+        } else {
+            let position = line.position();
+            let statement = line.generate_line()?;
+            if depth != 0 && !matches!(statement, GenerateStmt::InitElement(_)) {
+                return Err(Error::at(
+                    position,
+                    "only array element initialization and nested `for` are allowed in a generate loop",
+                ));
+            }
+            body.push(statement);
+        }
+    }
+}
+
+fn input_body<'a>(
+    next_line: &mut impl FnMut(&str, bool) -> Result<Line<'a>, Error>,
+    depth: usize,
+    in_row: bool,
+) -> Result<Vec<InputStmt<'a>>, Error> {
+    let mut body = Vec::new();
+    loop {
+        let mut line = next_line("an output line, `for`, `row`, or `}`", !in_row)?;
+        if line.consume("}") {
+            line.finish()?;
+            return Ok(body);
+        }
+        if line.starts_keyword("for") {
+            let position = line.position();
+            check_control_depth(depth, position)?;
+            let (variable, range) = line.for_header()?;
+            body.push(InputStmt::For {
+                position,
+                variable,
+                range,
+                body: input_body(next_line, depth + 1, in_row)?,
+            });
+        } else if line
+            .remaining()
+            .strip_prefix("row")
+            .is_some_and(|tail| tail.trim_matches([' ', '\t']) == "{")
+        {
+            let position = line.position();
+            if in_row {
+                return Err(Error::at(position, "nested `row` is not allowed"));
+            }
+            check_control_depth(depth, position)?;
+            body.push(InputStmt::RowBlock {
+                position,
+                body: input_body(next_line, depth + 1, true)?,
+            });
+        } else {
+            body.push(InputStmt::Row(line.output_row()?));
+        }
+    }
+}
+
+fn check_control_depth(depth: usize, position: Position) -> Result<(), Error> {
+    if depth == MAX_CONTROL_NESTING {
+        return Err(Error::at(
+            position,
+            format!("control nesting limit exceeded ({MAX_CONTROL_NESTING})"),
+        ));
+    }
+    Ok(())
 }
 
 struct Line<'a> {
@@ -400,13 +428,6 @@ impl<'a> Line<'a> {
             items.push(item);
         }
         Ok(OutputRow { position, items })
-    }
-
-    fn reject_nested_for(&self) -> Result<(), Error> {
-        if self.starts_keyword("for") {
-            return Err(Error::at(self.position(), "nested `for` is not supported"));
-        }
-        Ok(())
     }
 
     fn for_header(&mut self) -> Result<(Name<'a>, RangeExpr<'a>), Error> {

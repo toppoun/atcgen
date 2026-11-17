@@ -12,6 +12,8 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "corpus" / "atcoder"
 SEEDS = (0, 1, 42, 100, 7, 19, 23, 49, 127, 255, 1024, 65535, 2**63, 2**64 - 1)
+# Additional seeds and their expected first-row integer (N or T).
+BOUNDARY_SEEDS = {("abc370", "b"): {29: 1, 217: 100}, ("abc482", "g"): {2: 1, 17: 10}}
 STATUSES = ("supported", "format-only", "unsupported")
 COVERAGES = ("representative", "restricted", "none")
 INTEGER = re.compile(rb"-?[0-9]+")
@@ -254,15 +256,18 @@ def generate(binary: Path, generator: Path, seed: int) -> bytes:
     return result.stdout
 
 
-def verify_problem(binary: Path, path: Path) -> int:
+def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
     generator = path.with_name("generator.gen")
     require(generator.is_file(), "missing generator.gen")
-    checker = CHECKERS.get((path.parent.parent.name, path.parent.name))
+    problem = (path.parent.parent.name, path.parent.name)
+    checker = CHECKERS.get(problem)
     if checker is None:
         raise ValueError("missing constraint checker")
 
     outputs = set()
-    for seed in SEEDS:
+    boundaries = BOUNDARY_SEEDS.get(problem, {})
+    seeds = (*SEEDS, *boundaries)
+    for seed in seeds:
         try:
             first = generate(binary, generator, seed)
             second = generate(binary, generator, seed)
@@ -270,10 +275,13 @@ def verify_problem(binary: Path, path: Path) -> int:
             case = Input(first)
             checker(case)
             case.finish()
+            if seed in boundaries:
+                count = int(first.split(b"\n", 1)[0])
+                require(count == boundaries[seed], f"expected first row {boundaries[seed]}, got {count}")
             outputs.add(first)
         except (ValueError, OSError, subprocess.TimeoutExpired) as error:
             raise ValueError(f"seed {seed}: {error}") from error
-    return len(outputs)
+    return len(seeds), len(outputs)
 
 
 def main() -> int:
@@ -317,13 +325,13 @@ def main() -> int:
         try:
             if binary is None:
                 raise ValueError("atcgen build failed")
-            distinct = verify_problem(binary, path)
+            seed_count, distinct = verify_problem(binary, path)
         except ValueError as error:
             failures[path] = str(error)
             print(f"FAIL {label}: {classification}: {error}")
         else:
             verified += 1
-            print(f"PASS {label}: {classification}, {len(SEEDS)} seeds, {distinct} distinct outputs")
+            print(f"PASS {label}: {classification}, {seed_count} seeds, {distinct} distinct outputs")
 
     for generator in sorted(CORPUS.rglob("generator.gen")):
         if not generator.with_name("problem.toml").is_file():

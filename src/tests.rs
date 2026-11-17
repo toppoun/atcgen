@@ -130,6 +130,164 @@ fn loops_have_independent_scopes_in_both_blocks() {
 }
 
 #[test]
+fn nested_loops_preserve_generation_order_and_outer_bindings() {
+    let generation = "A[6]\nfor i in 1..=3 {\n  for j in 1..=i {\n    \
+        A[i*(i-1)/2+j] in (i*10+j)..=(i*10+j+8)\n  }\n}\nZ in A[6]..=A[6]";
+    let flat = "A[6]\nA[1] in 11..=19\nA[2] in 21..=29\nA[3] in 22..=30\n\
+        A[4] in 31..=39\nA[5] in 32..=40\nA[6] in 33..=41\nZ in A[6]..=A[6]";
+    let input = "for i in 1..=3 {\n  for j in 1..=i {\n    A[i*(i-1)/2+j]\n  }\n}\nZ";
+    let flat_input = "A[1]\nA[2]\nA[3]\nA[4]\nA[5]\nA[6]\nZ";
+    for seed in [0, 1, 42, u64::MAX] {
+        assert_eq!(
+            generate(&dsl(generation, input), seed).unwrap(),
+            generate(&dsl(flat, flat_input), seed).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn nested_loops_can_reuse_sibling_names() {
+    let generation = "A[2]\nfor i in 1..=1 {\n  for j in i..=i {\n    A[j] in 7..=7\n  }\n\
+        for j in (A[i]-5)..=2 {\n    A[j] in A[i]..=A[i]\n  }\n}";
+    let input = "for i in 1..=1 {\n  for j in i..=i {\n    A[j]\n  }\n\
+        for j in 2..=(i+1) {\n    A[j] Z\n  }\n}";
+    let source = dsl(&format!("{generation}\nZ in A[2]..=A[2]"), input);
+    assert_eq!(generate(&source, 42).unwrap(), "7\n7 7\n");
+}
+
+#[test]
+fn nested_loops_check_scopes_and_declarations_in_empty_paths() {
+    for (generation, input, expected) in [
+        (
+            "for i in 1..1 {\n for i in 1..1 {\n }\n}",
+            "",
+            "3:6: name collision for `i`",
+        ),
+        (
+            "",
+            "for i in 1..1 {\n row {\n  for i in 1..1 {\n  }\n }\n}",
+            "6:7: name collision for `i`",
+        ),
+        (
+            "for i in 1..1 {\n for j in j..=i {\n }\n}",
+            "",
+            "3:11: loop variable `j` is outside",
+        ),
+        (
+            "",
+            "for i in 1..1 {\n for j in 1..1 {\n }\n j\n}",
+            "7:2: loop variable `j` is outside",
+        ),
+        (
+            "for i in 1..1 {\n for j in 1..1 {\n  A[1]\n }\n}",
+            "",
+            "4:3: only array element initialization",
+        ),
+        (
+            "",
+            "row {\n for i in 1..1 {\n  M\n }\n}",
+            "6:3: undefined variable `M`",
+        ),
+    ] {
+        assert_error(generation, input, expected);
+    }
+}
+
+#[test]
+fn row_appends_references_and_whole_arrays_across_nested_loops() {
+    let generation = "row[2]\nrow[1] in -1..=-1\nrow[2] in 2..=2\nN in 7..=7";
+    let input = "row[2]\nrow row[2]\nrow{\n row[1] N\n \t\n\
+        for i in 1..=2 {\n  for j in i..=i {\n   row[j] N\n  }\n }\n row\n}";
+    assert_eq!(
+        generate(&dsl(generation, input), 42).unwrap(),
+        "2\n-1 2 2\n-1 7 -1 7 2 7 -1 2\n"
+    );
+}
+
+#[test]
+fn empty_rows_and_empty_loops_keep_distinct_line_boundaries() {
+    let input = "row {\n}\nrow {\n \t\n for i in 1..1 {\n  A[1/0]\n \n }\n}\n\n\
+        for i in 1..1 {\n row {\n }\n}\nfor i in 1..=1 {\n\n  for j in i..=i {\n   A[j]\n  }\n}";
+    assert_eq!(
+        generate(&dsl("A[1]\nA[1] in 4..=4", input), 42).unwrap(),
+        "\n\n\n\n4\n"
+    );
+}
+
+#[test]
+fn enforces_control_nesting_depth_in_both_blocks() {
+    let nested = |depth: usize, body: &str| {
+        let headers: String = (0..depth)
+            .map(|i| format!("for i{i} in 1..=1 {{\n"))
+            .collect();
+        format!("{headers}{body}{}", "}\n".repeat(depth))
+            .trim_end_matches('\n')
+            .to_owned()
+    };
+    let generation = format!("A[1]\n{}", nested(32, "A[1] in (i0+i31)..=(i0+i31)\n"));
+    let input = nested(31, "row {\n A[i0*i30]\n}\n");
+    assert_eq!(generate(&dsl(&generation, &input), 42).unwrap(), "2\n");
+    assert_error(
+        &nested(33, ""),
+        "",
+        "34:1: control nesting limit exceeded (32)",
+    );
+    assert_error(
+        "",
+        &nested(32, "row {\n}\n"),
+        "36:1: control nesting limit exceeded (32)",
+    );
+}
+
+#[test]
+fn counts_execution_work_per_extended_block() {
+    let near_limit = "for i in 1..=10 {\n for j in 1..=999997 {\n }\n}";
+    let exact = format!("{near_limit}\nfor k in 1..=8 {{\n}}");
+    let exact_row = format!("row {{\n{near_limit}\n\nfor k in 1..=7 {{\n}}\n}}");
+    assert_eq!(generate(&dsl(&exact, &exact_row), 42).unwrap(), "\n");
+
+    let over = format!("{near_limit}\nfor k in 1..=9 {{\n}}");
+    assert_error(&over, "", "6:14: execution work limit exceeded (10000000)");
+    assert_error("", &over, "8:14: execution work limit exceeded (10000000)");
+    assert_error(
+        "",
+        &format!("{exact_row}\nrow {{\n}}"),
+        "13:1: execution work limit exceeded (10000000)",
+    );
+
+    let legacy = "for i in 1..=1000000 {\n}\n".repeat(11);
+    assert_eq!(generate(&dsl(&legacy, &exact_row), 42).unwrap(), "\n");
+    assert_eq!(
+        generate(&dsl(&exact, legacy.trim_end_matches('\n')), 42).unwrap(),
+        ""
+    );
+    assert_error(
+        &format!("{legacy}\nfor i in 1..1 {{\n for j in 1..1 {{\n }}\n}}"),
+        "",
+        "execution work limit exceeded (10000000)",
+    );
+}
+
+#[test]
+fn checks_element_state_and_bounds_in_nested_execution() {
+    assert_error(
+        "A[2]\nfor i in 1..=2 {\n for j in 1..=i {\n  A[j] in 1..=1\n }\n}",
+        "",
+        "5:3: array element `A[1]` is already initialized",
+    );
+    assert_error(
+        "A[1]\nfor i in 1..=2 {\n for j in i..=i {\n  A[j] in 1..=1\n }\n}",
+        "",
+        "5:5: index 2 is out of bounds",
+    );
+    assert_error(
+        "A[2]\nA[1] in 1..=1",
+        "row {\n for i in 1..=2 {\n  A[i]\n }\n}",
+        "8:3: array element `A[2]` is uninitialized",
+    );
+}
+
+#[test]
 fn checks_static_errors_before_generation_even_in_empty_loops() {
     for (generation, input, expected) in [
         ("N in N..=1", "", "2:6: `N` is not available"),
@@ -243,16 +401,13 @@ fn rejects_old_syntax_and_unsupported_operations() {
         ("A[1]", "A[*]", "expected an integer"),
         ("A[1..2]", "", "2:4: expected `]`"),
         ("A[1]", "A[1]A[1]", "5:5: expected whitespace"),
-        (
-            "for i in 1..1 {\n for j in 1..1 {\n }\n}",
-            "",
-            "3:2: nested `for`",
-        ),
+        ("", "row {\n row {\n }\n}", "5:2: nested `row`"),
         (
             "",
-            "for i in 1..1 {\n for j in 1..1 {\n }\n}",
-            "5:2: nested `for`",
+            "row {\n for i in 1..1 {\n  row {\n  }\n }\n}",
+            "6:3: nested `row`",
         ),
+        ("row {\n}", "", "2:5: expected an identifier"),
         (
             "for i in 1..1 {\n N in 1..=1\n}",
             "",
@@ -676,6 +831,11 @@ fn counts_output_integers_per_reference_and_on_every_reuse() {
         input,
         "10:8: output integer limit exceeded (1000000)",
     );
+    assert_error(
+        generation,
+        "row {\n for i in 1..=500000 {\n  A\n }\n A[1]\n}",
+        "11:2: output integer limit exceeded (1000000)",
+    );
 }
 
 #[test]
@@ -713,6 +873,11 @@ fn enforces_output_byte_limit_at_references_and_line_endings() {
         generation,
         &format!("{input}\n  D"),
         "12:3: output size limit exceeded (8388608 bytes)",
+    );
+    assert_error(
+        generation,
+        &format!("  row {{\n{input}\n C\n}}"),
+        "9:3: output size limit exceeded (8388608 bytes)",
     );
 
     let blank_rows = format!("for i in 1..=1000000 {{\n{}}}", "\n".repeat(9));

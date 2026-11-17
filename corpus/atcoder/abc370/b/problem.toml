@@ -2,10 +2,8 @@ contest = "abc370"
 problem = "b"
 url = "https://atcoder.jp/contests/abc370/tasks/abc370_b"
 status = "supported"
-coverage = "restricted"
+coverage = "representative"
 description = "1 行目に N、その後に下三角行列。行列の i 行目には i 個の整数が並ぶ。"
 constraints = ["1 ≤ N ≤ 100、1 ≤ A_i,j ≤ N。すべて整数。"]
-limitations = [
-    "N は 1..=6。配列を平坦化し、行番号 k ごとに (N+6-k)/6 回のループで行を出力する。N に応じて行を 0 回または 1 回出力し、各行の要素参照は個別に列挙する。",
-]
+limitations = []
 missing_features = []

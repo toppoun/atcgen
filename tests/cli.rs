@@ -35,6 +35,19 @@ fn cli_leaves_stdout_empty_when_a_later_output_iteration_fails() {
     );
 }
 
+#[test]
+fn cli_leaves_stdout_empty_when_a_nested_generation_iteration_fails() {
+    assert_error("nested-generation-error.gen", "5:25: invalid range `i..=1`");
+}
+
+#[test]
+fn cli_leaves_stdout_empty_when_a_later_row_fails() {
+    assert_error(
+        "nested-row-error.gen",
+        "11:22: array element `A[2]` is uninitialized",
+    );
+}
+
 fn assert_error(file: &str, expected: &str) {
     let source = source(&format!("tests/fixtures/{file}"));
     let output = run(&source);

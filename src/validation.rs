@@ -18,12 +18,26 @@ pub(crate) enum BoundGenerateStmt<'a> {
         name: Name<'a>,
         range: BoundRange<'a>,
     },
-    Array(BoundExpr<'a>),
+    Array {
+        name: Name<'a>,
+        length: BoundExpr<'a>,
+    },
     InitElement(BoundElementInit<'a>),
     For {
+        position: Position,
         range: BoundRange<'a>,
-        body: Vec<BoundElementInit<'a>>,
+        body: Vec<BoundGenerateStmt<'a>>,
     },
+}
+
+impl BoundGenerateStmt<'_> {
+    pub(crate) fn position(&self) -> Position {
+        match self {
+            Self::Scalar { name, .. } | Self::Array { name, .. } => name.position,
+            Self::InitElement(init) => init.target.array.name.position,
+            Self::For { position, .. } => *position,
+        }
+    }
 }
 
 pub(crate) struct BoundElementInit<'a> {
@@ -33,10 +47,24 @@ pub(crate) struct BoundElementInit<'a> {
 
 pub(crate) enum BoundInputStmt<'a> {
     Row(BoundRow<'a>),
-    For {
-        range: BoundRange<'a>,
-        rows: Vec<BoundRow<'a>>,
+    RowBlock {
+        position: Position,
+        body: Vec<BoundInputStmt<'a>>,
     },
+    For {
+        position: Position,
+        range: BoundRange<'a>,
+        body: Vec<BoundInputStmt<'a>>,
+    },
+}
+
+impl BoundInputStmt<'_> {
+    pub(crate) fn position(&self) -> Position {
+        match self {
+            Self::Row(row) => row.position,
+            Self::RowBlock { position, .. } | Self::For { position, .. } => *position,
+        }
+    }
 }
 
 pub(crate) struct BoundRow<'a> {
@@ -53,7 +81,7 @@ pub(crate) enum BoundOutputRef<'a> {
 #[derive(Clone, Copy)]
 pub(crate) enum ScalarRef {
     Global(usize),
-    LoopIndex,
+    LoopIndex(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +138,35 @@ impl<'a> Names<'a> {
         self.loop_variables.insert(name.value);
         Ok(())
     }
+
+    fn register_generate(&mut self, statements: &[GenerateStmt<'a>]) -> Result<(), Error> {
+        for statement in statements {
+            match statement {
+                GenerateStmt::GenerateScalar { name, .. } => self.declare(*name, Kind::Scalar)?,
+                GenerateStmt::DeclareArray { name, .. } => self.declare(*name, Kind::Array)?,
+                GenerateStmt::For { variable, body, .. } => {
+                    self.register_loop(*variable)?;
+                    self.register_generate(body)?;
+                }
+                GenerateStmt::InitElement(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn register_input(&mut self, statements: &[InputStmt<'a>]) -> Result<(), Error> {
+        for statement in statements {
+            match statement {
+                InputStmt::For { variable, body, .. } => {
+                    self.register_loop(*variable)?;
+                    self.register_input(body)?;
+                }
+                InputStmt::RowBlock { body, .. } => self.register_input(body)?,
+                InputStmt::Row(_) => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 fn collision(name: Name<'_>) -> Error {
@@ -121,77 +178,16 @@ fn collision(name: Name<'_>) -> Error {
 
 pub(crate) fn validate(program: Program<'_>) -> Result<ValidatedProgram<'_>, Error> {
     let mut names = Names::default();
-    for statement in &program.generate {
-        match statement {
-            GenerateStmt::GenerateScalar { name, .. } => names.declare(*name, Kind::Scalar)?,
-            GenerateStmt::DeclareArray { name, .. } => names.declare(*name, Kind::Array)?,
-            GenerateStmt::For { variable, .. } => names.register_loop(*variable)?,
-            GenerateStmt::InitElement(_) => {}
-        }
-    }
-    for statement in &program.input {
-        if let InputStmt::For { variable, .. } = statement {
-            names.register_loop(*variable)?;
-        }
-    }
+    names.register_generate(&program.generate)?;
+    names.register_input(&program.input)?;
 
     let mut resolver = Resolver {
         names: &names,
         available: 0,
-        loop_variable: None,
+        loop_variables: Vec::new(),
     };
-    let mut generate = Vec::new();
-    for statement in program.generate {
-        let statement = match statement {
-            GenerateStmt::GenerateScalar { name, range } => {
-                let range = resolver.range(range)?;
-                resolver.available += 1;
-                BoundGenerateStmt::Scalar { name, range }
-            }
-            GenerateStmt::DeclareArray { length, .. } => {
-                let length = resolver.expr(length)?;
-                resolver.available += 1;
-                BoundGenerateStmt::Array(length)
-            }
-            GenerateStmt::InitElement(init) => BoundGenerateStmt::InitElement(resolver.init(init)?),
-            GenerateStmt::For {
-                variable,
-                range,
-                body,
-            } => {
-                let range = resolver.range(range)?;
-                let scope = resolver.in_loop(variable);
-                let body = body
-                    .into_iter()
-                    .map(|init| scope.init(init))
-                    .collect::<Result<_, _>>()?;
-                BoundGenerateStmt::For { range, body }
-            }
-        };
-        generate.push(statement);
-    }
-
-    let mut input = Vec::new();
-    for statement in program.input {
-        let statement = match statement {
-            InputStmt::Row(row) => BoundInputStmt::Row(resolver.row(row)?),
-            InputStmt::For {
-                variable,
-                range,
-                rows,
-            } => {
-                let range = resolver.range(range)?;
-                let scope = resolver.in_loop(variable);
-                let rows = rows
-                    .into_iter()
-                    .map(|row| scope.row(row))
-                    .collect::<Result<_, _>>()?;
-                BoundInputStmt::For { range, rows }
-            }
-        };
-        input.push(statement);
-    }
-
+    let generate = resolver.generate_body(program.generate)?;
+    let input = resolver.input_body(program.input)?;
     Ok(ValidatedProgram {
         generate,
         input,
@@ -199,20 +195,101 @@ pub(crate) fn validate(program: Program<'_>) -> Result<ValidatedProgram<'_>, Err
     })
 }
 
-#[derive(Clone, Copy)]
 struct Resolver<'scope, 'a> {
     names: &'scope Names<'a>,
     // Only this prefix of the global slots has been declared at this point.
     available: usize,
-    loop_variable: Option<&'a str>,
+    loop_variables: Vec<&'a str>,
 }
 
 impl<'a> Resolver<'_, 'a> {
-    fn in_loop(self, variable: Name<'a>) -> Self {
-        Self {
-            loop_variable: Some(variable.value),
-            ..self
+    fn generate_body(
+        &mut self,
+        statements: Vec<GenerateStmt<'a>>,
+    ) -> Result<Vec<BoundGenerateStmt<'a>>, Error> {
+        statements
+            .into_iter()
+            .map(|statement| self.generate_stmt(statement))
+            .collect()
+    }
+
+    fn generate_stmt(
+        &mut self,
+        statement: GenerateStmt<'a>,
+    ) -> Result<BoundGenerateStmt<'a>, Error> {
+        Ok(match statement {
+            GenerateStmt::GenerateScalar { name, range } => {
+                let range = self.range(range)?;
+                self.available += 1;
+                BoundGenerateStmt::Scalar { name, range }
+            }
+            GenerateStmt::DeclareArray { name, length } => {
+                let length = self.expr(length)?;
+                self.available += 1;
+                BoundGenerateStmt::Array { name, length }
+            }
+            GenerateStmt::InitElement(init) => BoundGenerateStmt::InitElement(self.init(init)?),
+            GenerateStmt::For {
+                position,
+                variable,
+                range,
+                body,
+            } => {
+                let range = self.range(range)?;
+                self.enter_loop(variable)?;
+                let body = self.generate_body(body)?;
+                self.loop_variables.pop();
+                BoundGenerateStmt::For {
+                    position,
+                    range,
+                    body,
+                }
+            }
+        })
+    }
+
+    fn input_body(
+        &mut self,
+        statements: Vec<InputStmt<'a>>,
+    ) -> Result<Vec<BoundInputStmt<'a>>, Error> {
+        statements
+            .into_iter()
+            .map(|statement| self.input_stmt(statement))
+            .collect()
+    }
+
+    fn input_stmt(&mut self, statement: InputStmt<'a>) -> Result<BoundInputStmt<'a>, Error> {
+        Ok(match statement {
+            InputStmt::Row(row) => BoundInputStmt::Row(self.row(row)?),
+            InputStmt::RowBlock { position, body } => BoundInputStmt::RowBlock {
+                position,
+                body: self.input_body(body)?,
+            },
+            InputStmt::For {
+                position,
+                variable,
+                range,
+                body,
+            } => {
+                let range = self.range(range)?;
+                self.enter_loop(variable)?;
+                let body = self.input_body(body)?;
+                self.loop_variables.pop();
+                BoundInputStmt::For {
+                    position,
+                    range,
+                    body,
+                }
+            }
+        })
+    }
+
+    fn enter_loop(&mut self, variable: Name<'a>) -> Result<(), Error> {
+        if self.loop_variables.contains(&variable.value) {
+            return Err(collision(variable));
         }
+        self.loop_variables.push(variable.value);
+        Ok(())
     }
 
     fn global(&self, name: Name<'a>) -> Result<Binding, Error> {
@@ -227,13 +304,15 @@ impl<'a> Resolver<'_, 'a> {
         Err(Error::at(name.position, message))
     }
 
-    fn is_loop_variable(&self, name: Name<'a>) -> bool {
-        self.loop_variable == Some(name.value)
+    fn loop_index(&self, name: Name<'a>) -> Option<usize> {
+        self.loop_variables
+            .iter()
+            .position(|&variable| variable == name.value)
     }
 
     fn element(&self, element: ElementRef<'a>) -> Result<BoundElement<'a>, Error> {
         let name = element.array;
-        if self.is_loop_variable(name) {
+        if self.loop_index(name).is_some() {
             return Err(Error::at(
                 name.position,
                 format!("loop variable `{}` cannot be indexed", name.value),
@@ -283,8 +362,8 @@ impl<'a> Resolver<'_, 'a> {
         Ok(match node {
             ExprNode::Literal(value) => ExprNode::Literal(value),
             ExprNode::Variable(name) => {
-                let reference = if self.is_loop_variable(name) {
-                    ScalarRef::LoopIndex
+                let reference = if let Some(index) = self.loop_index(name) {
+                    ScalarRef::LoopIndex(index)
                 } else {
                     let binding = self.global(name)?;
                     if let Kind::Array = binding.kind {
@@ -327,7 +406,7 @@ impl<'a> Resolver<'_, 'a> {
     fn output_ref(&self, item: OutputRef<'a>) -> Result<Located<BoundOutputRef<'a>>, Error> {
         let (name, value) = match item {
             OutputRef::Name(name) => {
-                if self.is_loop_variable(name) {
+                if self.loop_index(name).is_some() {
                     return Err(Error::at(
                         name.position,
                         format!("loop variable `{}` cannot be output directly", name.value),

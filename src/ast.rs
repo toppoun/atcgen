@@ -16,9 +16,10 @@ pub(crate) enum GenerateStmt<'a> {
     },
     InitElement(ElementInit<'a>),
     For {
+        position: Position,
         variable: Name<'a>,
         range: RangeExpr<'a>,
-        body: Vec<ElementInit<'a>>,
+        body: Vec<GenerateStmt<'a>>,
     },
 }
 
@@ -29,10 +30,15 @@ pub(crate) struct ElementInit<'a> {
 
 pub(crate) enum InputStmt<'a> {
     Row(OutputRow<'a>),
+    RowBlock {
+        position: Position,
+        body: Vec<InputStmt<'a>>,
+    },
     For {
+        position: Position,
         variable: Name<'a>,
         range: RangeExpr<'a>,
-        rows: Vec<OutputRow<'a>>,
+        body: Vec<InputStmt<'a>>,
     },
 }
 
