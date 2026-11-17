@@ -1,0 +1,13 @@
+generate {
+    N in 3..=3
+    A[N]
+    for i in 1..N {
+        A[i] in i..=i
+    }
+}
+input {
+    N
+    for i in 1..=N {
+        A[i]
+    }
+}

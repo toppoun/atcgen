@@ -1,12 +1,17 @@
-input {
-    N
+generate {
+    N in 2..=10
+    A[N]
+    B[N]
+
     for i in 1..=N {
-        A B
+        A[i] in 1..=99
+        B[i] in (A[i]+1)..=100
     }
 }
 
-constraints {
-    N in 1..=10
-    A in 1..=99
-    B in (A+1)..=100
+input {
+    N
+    for i in 1..=N {
+        A[i] B[i]
+    }
 }

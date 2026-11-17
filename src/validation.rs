@@ -1,317 +1,353 @@
-use std::collections::HashMap;
-use std::ops::Range;
+use std::collections::{HashMap, HashSet};
 
 use crate::Error;
-use crate::ast::{Expr, ExprNode, Input, Name, RangeExpr, Row, Statement};
+use crate::ast::{
+    ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InputStmt, Located, Name, OutputRef,
+    OutputRow, Program, RangeExpr,
+};
 use crate::error::Position;
 
-pub(crate) struct ValidatedInput<'a> {
-    pub statements: Vec<ValidatedStatement<'a>>,
+pub(crate) struct ValidatedProgram<'a> {
+    pub generate: Vec<BoundGenerateStmt<'a>>,
+    pub input: Vec<BoundInputStmt<'a>>,
     pub slot_count: usize,
 }
 
-pub(crate) enum ValidatedStatement<'a> {
-    Row(ValidatedRow<'a>),
-    For(ValidatedFor<'a>),
+pub(crate) enum BoundGenerateStmt<'a> {
+    Scalar {
+        name: Name<'a>,
+        range: BoundRange<'a>,
+    },
+    Array(BoundExpr<'a>),
+    InitElement(BoundElementInit<'a>),
+    For {
+        range: BoundRange<'a>,
+        body: Vec<BoundElementInit<'a>>,
+    },
 }
 
-pub(crate) struct ValidatedRow<'a> {
+pub(crate) struct BoundElementInit<'a> {
+    pub target: BoundElement<'a>,
+    pub range: BoundRange<'a>,
+}
+
+pub(crate) enum BoundInputStmt<'a> {
+    Row(BoundRow<'a>),
+    For {
+        range: BoundRange<'a>,
+        rows: Vec<BoundRow<'a>>,
+    },
+}
+
+pub(crate) struct BoundRow<'a> {
     pub position: Position,
-    pub variables: Vec<Variable<'a>>,
+    pub items: Vec<Located<BoundOutputRef<'a>>>,
 }
 
-pub(crate) struct ValidatedFor<'a> {
-    // The index is the first slot, followed by this loop's declarations.
-    pub slots: Range<usize>,
-    pub range: BoundRange<'a>,
-    pub rows: Vec<ValidatedRow<'a>>,
-}
-
-pub(crate) struct Variable<'a> {
-    pub name: Name<'a>,
-    pub slot: usize,
-    pub length: Option<BoundExpr<'a>>,
-    pub range: BoundRange<'a>,
+pub(crate) enum BoundOutputRef<'a> {
+    Scalar(usize),
+    WholeArray(ArrayRef<'a>),
+    Element(BoundElement<'a>),
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct Reference<'a> {
+pub(crate) enum ScalarRef {
+    Global(usize),
+    LoopIndex,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ArrayRef<'a> {
     pub name: Name<'a>,
     pub slot: usize,
 }
 
-pub(crate) type BoundExpr<'a> = Expr<'a, Reference<'a>>;
-pub(crate) type BoundRange<'a> = RangeExpr<'a, Reference<'a>>;
+pub(crate) type BoundElement<'a> = ElementRef<'a, ScalarRef, ArrayRef<'a>>;
+pub(crate) type BoundExpr<'a> = Expr<'a, ScalarRef, ArrayRef<'a>>;
+pub(crate) type BoundRange<'a> = RangeExpr<'a, ScalarRef, ArrayRef<'a>>;
+pub(crate) type BoundNode<'a> = ExprNode<'a, ScalarRef, ArrayRef<'a>>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NameKind {
-    Outer,
-    Local,
-    LoopIndex,
+#[derive(Clone, Copy)]
+enum Kind {
+    Scalar,
+    Array,
 }
 
+#[derive(Clone, Copy)]
 struct Binding {
     slot: usize,
-    array: bool,
+    kind: Kind,
 }
-
-type Scope<'a> = HashMap<&'a str, Binding>;
 
 #[derive(Default)]
-struct Registry<'a> {
-    names: HashMap<&'a str, NameKind>,
-    slot_count: usize,
+struct Names<'a> {
+    globals: HashMap<&'a str, Binding>,
+    loop_variables: HashSet<&'a str>,
 }
 
-impl<'a> Registry<'a> {
-    fn declare(
-        &mut self,
-        scope: &mut Scope<'a>,
-        name: Name<'a>,
-        kind: NameKind,
-        array: bool,
-    ) -> Result<(), Error> {
-        if self
-            .names
-            .get(name.value)
-            .is_some_and(|&previous| previous != kind)
-        {
-            return Err(Error::at(
-                name.position,
-                format!("name collision for `{}`", name.value),
-            ));
+impl<'a> Names<'a> {
+    fn declare(&mut self, name: Name<'a>, kind: Kind) -> Result<(), Error> {
+        if self.loop_variables.contains(name.value) {
+            return Err(collision(name));
         }
-        if scope.contains_key(name.value) {
-            return Err(Error::at(
+        let slot = self.globals.len();
+        match self.globals.entry(name.value) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Binding { slot, kind });
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => Err(Error::at(
                 name.position,
                 format!("duplicate declaration of `{}`", name.value),
-            ));
+            )),
         }
-        self.names.insert(name.value, kind);
-        scope.insert(
-            name.value,
-            Binding {
-                slot: self.slot_count,
-                array,
-            },
-        );
-        self.slot_count += 1;
+    }
+
+    fn register_loop(&mut self, name: Name<'a>) -> Result<(), Error> {
+        if self.globals.contains_key(name.value) {
+            return Err(collision(name));
+        }
+        self.loop_variables.insert(name.value);
         Ok(())
     }
 }
 
-pub(crate) fn validate(input: Input<'_>) -> Result<ValidatedInput<'_>, Error> {
-    let mut registry = Registry::default();
-    let mut outer_scope = Scope::new();
-    let mut loop_scopes = Vec::new();
-    for statement in &input.statements {
+fn collision(name: Name<'_>) -> Error {
+    Error::at(
+        name.position,
+        format!("name collision for `{}`", name.value),
+    )
+}
+
+pub(crate) fn validate(program: Program<'_>) -> Result<ValidatedProgram<'_>, Error> {
+    let mut names = Names::default();
+    for statement in &program.generate {
         match statement {
-            Statement::Row(row) => {
-                for declaration in &row.declarations {
-                    registry.declare(
-                        &mut outer_scope,
-                        declaration.name,
-                        NameKind::Outer,
-                        declaration.length.is_some(),
-                    )?;
-                }
-            }
-            Statement::For(loop_) => {
-                let mut scope = Scope::new();
-                registry.declare(&mut scope, loop_.index, NameKind::LoopIndex, false)?;
-                for declaration in loop_.rows.iter().flat_map(|row| &row.declarations) {
-                    registry.declare(
-                        &mut scope,
-                        declaration.name,
-                        NameKind::Local,
-                        declaration.length.is_some(),
-                    )?;
-                }
-                loop_scopes.push(scope);
-            }
+            GenerateStmt::GenerateScalar { name, .. } => names.declare(*name, Kind::Scalar)?,
+            GenerateStmt::DeclareArray { name, .. } => names.declare(*name, Kind::Array)?,
+            GenerateStmt::For { variable, .. } => names.register_loop(*variable)?,
+            GenerateStmt::InitElement(_) => {}
+        }
+    }
+    for statement in &program.input {
+        if let InputStmt::For { variable, .. } = statement {
+            names.register_loop(*variable)?;
         }
     }
 
-    let mut constraints = HashMap::new();
-    for constraint in input.constraints {
-        let target = constraint.target;
-        match registry.names.get(target.value) {
-            None => {
-                return Err(Error::at(
-                    target.position,
-                    format!("undefined variable `{}`", target.value),
-                ));
-            }
-            Some(NameKind::LoopIndex) => {
-                return Err(Error::at(
-                    target.position,
-                    format!("loop variable `{}` cannot have a constraint", target.value),
-                ));
-            }
-            Some(NameKind::Outer | NameKind::Local) => {}
-        }
-        if constraints.insert(target.value, constraint.range).is_some() {
-            return Err(Error::at(
-                target.position,
-                format!("duplicate constraint for `{}`", target.value),
-            ));
-        }
-    }
-
-    let outer = Resolver {
-        outer: &outer_scope,
-        local: None,
-        names: &registry.names,
+    let mut resolver = Resolver {
+        names: &names,
+        available: 0,
+        loop_variable: None,
     };
-    let mut loop_scopes = loop_scopes.iter();
-    let mut statements = Vec::new();
-    for statement in input.statements {
+    let mut generate = Vec::new();
+    for statement in program.generate {
         let statement = match statement {
-            Statement::Row(row) => ValidatedStatement::Row(outer.row(row, &constraints)?),
-            Statement::For(loop_) => {
-                let local = loop_scopes
-                    .next()
-                    .expect("scope was registered for every loop");
-                let index = local[loop_.index.value].slot;
-                let range = outer.range(&loop_.range, index)?;
-                let resolver = Resolver {
-                    local: Some(local),
-                    ..outer
-                };
-                let rows = loop_
-                    .rows
+            GenerateStmt::GenerateScalar { name, range } => {
+                let range = resolver.range(range)?;
+                resolver.available += 1;
+                BoundGenerateStmt::Scalar { name, range }
+            }
+            GenerateStmt::DeclareArray { length, .. } => {
+                let length = resolver.expr(length)?;
+                resolver.available += 1;
+                BoundGenerateStmt::Array(length)
+            }
+            GenerateStmt::InitElement(init) => BoundGenerateStmt::InitElement(resolver.init(init)?),
+            GenerateStmt::For {
+                variable,
+                range,
+                body,
+            } => {
+                let range = resolver.range(range)?;
+                let scope = resolver.in_loop(variable);
+                let body = body
                     .into_iter()
-                    .map(|row| resolver.row(row, &constraints))
+                    .map(|init| scope.init(init))
                     .collect::<Result<_, _>>()?;
-                ValidatedStatement::For(ValidatedFor {
-                    slots: index..index + local.len(),
-                    range,
-                    rows,
-                })
+                BoundGenerateStmt::For { range, body }
             }
         };
-        statements.push(statement);
+        generate.push(statement);
     }
-    Ok(ValidatedInput {
-        statements,
-        slot_count: registry.slot_count,
+
+    let mut input = Vec::new();
+    for statement in program.input {
+        let statement = match statement {
+            InputStmt::Row(row) => BoundInputStmt::Row(resolver.row(row)?),
+            InputStmt::For {
+                variable,
+                range,
+                rows,
+            } => {
+                let range = resolver.range(range)?;
+                let scope = resolver.in_loop(variable);
+                let rows = rows
+                    .into_iter()
+                    .map(|row| scope.row(row))
+                    .collect::<Result<_, _>>()?;
+                BoundInputStmt::For { range, rows }
+            }
+        };
+        input.push(statement);
+    }
+
+    Ok(ValidatedProgram {
+        generate,
+        input,
+        slot_count: names.globals.len(),
     })
 }
 
+#[derive(Clone, Copy)]
 struct Resolver<'scope, 'a> {
-    outer: &'scope Scope<'a>,
-    local: Option<&'scope Scope<'a>>,
-    names: &'scope HashMap<&'a str, NameKind>,
+    names: &'scope Names<'a>,
+    // Only this prefix of the global slots has been declared at this point.
+    available: usize,
+    loop_variable: Option<&'a str>,
 }
 
 impl<'a> Resolver<'_, 'a> {
-    fn binding(&self, name: &str) -> Option<&Binding> {
-        self.local
-            .and_then(|scope| scope.get(name))
-            .or_else(|| self.outer.get(name))
+    fn in_loop(self, variable: Name<'a>) -> Self {
+        Self {
+            loop_variable: Some(variable.value),
+            ..self
+        }
     }
 
-    fn row(
-        &self,
-        row: Row<'a>,
-        constraints: &HashMap<&str, RangeExpr<'a>>,
-    ) -> Result<ValidatedRow<'a>, Error> {
-        let mut variables = Vec::new();
-        for declaration in row.declarations {
-            let name = declaration.name;
-            let Some(range) = constraints.get(name.value) else {
-                return Err(Error::at(
-                    name.position,
-                    format!("missing constraint for `{}`", name.value),
-                ));
-            };
-            let slot = self
-                .binding(name.value)
-                .expect("declaration was registered")
-                .slot;
-            let length = declaration
-                .length
-                .as_ref()
-                .map(|expr| self.expression(expr, slot))
-                .transpose()?;
-            let range = self.range(range, slot)?;
-            variables.push(Variable {
-                name,
-                slot,
-                length,
-                range,
-            });
+    fn global(&self, name: Name<'a>) -> Result<Binding, Error> {
+        let message = match self.names.globals.get(name.value) {
+            Some(&binding) if binding.slot < self.available => return Ok(binding),
+            Some(_) => format!("`{}` is not available before its declaration", name.value),
+            None if self.names.loop_variables.contains(name.value) => {
+                format!("loop variable `{}` is outside this scope", name.value)
+            }
+            None => format!("undefined variable `{}`", name.value),
+        };
+        Err(Error::at(name.position, message))
+    }
+
+    fn is_loop_variable(&self, name: Name<'a>) -> bool {
+        self.loop_variable == Some(name.value)
+    }
+
+    fn element(&self, element: ElementRef<'a>) -> Result<BoundElement<'a>, Error> {
+        let name = element.array;
+        if self.is_loop_variable(name) {
+            return Err(Error::at(
+                name.position,
+                format!("loop variable `{}` cannot be indexed", name.value),
+            ));
         }
-        Ok(ValidatedRow {
-            position: row.position,
-            variables,
+        let binding = self.global(name)?;
+        match binding.kind {
+            Kind::Scalar => Err(Error::at(
+                name.position,
+                format!("`{}` is a scalar; expected an array", name.value),
+            )),
+            Kind::Array => Ok(BoundElement {
+                array: ArrayRef {
+                    name,
+                    slot: binding.slot,
+                },
+                index: self.expr(element.index)?,
+            }),
+        }
+    }
+
+    fn init(&self, init: ElementInit<'a>) -> Result<BoundElementInit<'a>, Error> {
+        Ok(BoundElementInit {
+            target: self.element(init.target)?,
+            range: self.range(init.range)?,
         })
     }
 
-    fn range(&self, range: &RangeExpr<'a>, current: usize) -> Result<BoundRange<'a>, Error> {
-        Ok(RangeExpr {
-            lower: self.expression(&range.lower, current)?,
-            upper: self.expression(&range.upper, current)?,
+    fn range(&self, range: RangeExpr<'a>) -> Result<BoundRange<'a>, Error> {
+        Ok(BoundRange {
+            lower: self.expr(range.lower)?,
+            upper: self.expr(range.upper)?,
             end: range.end,
             source: range.source,
         })
     }
 
-    fn expression(&self, expr: &Expr<'a>, current: usize) -> Result<BoundExpr<'a>, Error> {
+    fn expr(&self, expr: Expr<'a>) -> Result<BoundExpr<'a>, Error> {
         Ok(Expr {
-            node: self.node(&expr.node, current)?,
             position: expr.position,
             source: expr.source,
+            node: self.node(expr.node)?,
         })
     }
 
-    fn node(
-        &self,
-        node: &ExprNode<Name<'a>>,
-        current: usize,
-    ) -> Result<ExprNode<Reference<'a>>, Error> {
+    fn node(&self, node: ExprNode<'a>) -> Result<BoundNode<'a>, Error> {
         Ok(match node {
-            ExprNode::Literal(value) => ExprNode::Literal(*value),
-            ExprNode::Variable(name) => ExprNode::Variable(self.reference(*name, current)?),
+            ExprNode::Literal(value) => ExprNode::Literal(value),
+            ExprNode::Variable(name) => {
+                let reference = if self.is_loop_variable(name) {
+                    ScalarRef::LoopIndex
+                } else {
+                    let binding = self.global(name)?;
+                    if let Kind::Array = binding.kind {
+                        return Err(Error::at(
+                            name.position,
+                            format!("`{}` is an array; expected a scalar", name.value),
+                        ));
+                    }
+                    ScalarRef::Global(binding.slot)
+                };
+                ExprNode::Variable(reference)
+            }
+            ExprNode::Element(element) => ExprNode::Element(Box::new(self.element(*element)?)),
             ExprNode::Unary { op, operand } => ExprNode::Unary {
-                op: *op,
-                operand: Box::new(self.node(operand, current)?),
+                op,
+                operand: Box::new(self.node(*operand)?),
             },
             ExprNode::Binary { first, rest } => ExprNode::Binary {
-                first: Box::new(self.node(first, current)?),
+                first: Box::new(self.node(*first)?),
                 rest: rest
-                    .iter()
-                    .map(|(op, operand)| Ok((*op, self.node(operand, current)?)))
+                    .into_iter()
+                    .map(|(op, operand)| Ok((op, self.node(operand)?)))
                     .collect::<Result<_, Error>>()?,
             },
         })
     }
 
-    fn reference(&self, name: Name<'a>, current: usize) -> Result<Reference<'a>, Error> {
-        let variable = name.value;
-        let message = match self.binding(variable) {
-            None => match self.names.get(variable) {
-                Some(NameKind::Local) => format!(
-                    "`{variable}` is outside this scope; a loop collection cannot be used as a scalar here"
-                ),
-                Some(NameKind::LoopIndex) => {
-                    format!("loop variable `{variable}` is outside this scope")
+    fn row(&self, row: OutputRow<'a>) -> Result<BoundRow<'a>, Error> {
+        let items = row
+            .items
+            .into_iter()
+            .map(|item| self.output_ref(item))
+            .collect::<Result<_, _>>()?;
+        Ok(BoundRow {
+            position: row.position,
+            items,
+        })
+    }
+
+    fn output_ref(&self, item: OutputRef<'a>) -> Result<Located<BoundOutputRef<'a>>, Error> {
+        let (name, value) = match item {
+            OutputRef::Name(name) => {
+                if self.is_loop_variable(name) {
+                    return Err(Error::at(
+                        name.position,
+                        format!("loop variable `{}` cannot be output directly", name.value),
+                    ));
                 }
-                _ => format!("undefined variable `{variable}`"),
-            },
-            Some(binding) if binding.array => {
-                format!("`{variable}` is an array; expected a scalar")
+                let Binding { slot, kind } = self.global(name)?;
+                let value = match kind {
+                    Kind::Scalar => BoundOutputRef::Scalar(slot),
+                    Kind::Array => BoundOutputRef::WholeArray(ArrayRef { name, slot }),
+                };
+                (name, value)
             }
-            Some(binding) if binding.slot >= current => {
-                format!("`{variable}` is not available before this declaration")
-            }
-            Some(binding) => {
-                return Ok(Reference {
-                    name,
-                    slot: binding.slot,
-                });
-            }
+            OutputRef::Element(element) => (
+                element.array,
+                BoundOutputRef::Element(self.element(element)?),
+            ),
         };
-        Err(Error::at(name.position, message))
+        Ok(Located {
+            value,
+            position: name.position,
+        })
     }
 }

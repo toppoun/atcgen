@@ -1,15 +1,15 @@
 use crate::Error;
 use crate::ast::{
-    BinaryOp, Constraint, Declaration, Expr, ExprNode, For, Input, Located, Name, RangeEnd,
-    RangeExpr, Row, Statement, UnaryOp,
+    BinaryOp, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InputStmt, Located, Name,
+    OutputRef, OutputRow, Program, RangeEnd, RangeExpr, UnaryOp,
 };
 use crate::error::Position;
 
 const MAX_EXPRESSION_NESTING: usize = 128;
 
-pub(crate) fn parse(source: &str) -> Result<Input<'_>, Error> {
+pub(crate) fn parse(source: &str) -> Result<Program<'_>, Error> {
     let mut lines = source
-        .lines()
+        .split_inclusive('\n')
         .enumerate()
         .map(|(index, text)| Line::new(index + 1, text));
     let mut next_line = |expected, keep_blank| {
@@ -24,58 +24,83 @@ pub(crate) fn parse(source: &str) -> Result<Input<'_>, Error> {
             })
     };
 
-    next_line("`input {`", false)?.block_header("input")?;
-    let mut statements = Vec::new();
+    next_line("`generate {`", false)?.block_header("generate")?;
+    let mut generate = Vec::new();
     loop {
-        let mut line = next_line("an input declaration, `for`, or `}`", false)?;
-        let position = line.position();
+        let mut line = next_line("a generation operation, `for`, or `}`", false)?;
         if line.consume("}") {
             line.finish()?;
-            if statements.is_empty() {
-                return Err(Error::at(position, "input block is empty"));
-            }
             break;
         }
         if line.starts_keyword("for") {
-            let (index, range) = line.for_header()?;
-            let mut rows = Vec::new();
+            let (variable, range) = line.for_header()?;
+            let mut body = Vec::new();
             loop {
-                let mut body = next_line("an input declaration or `}` in the `for` body", true)?;
-                if body.consume("}") {
-                    body.finish()?;
+                let mut line = next_line("an element initialization or `}`", false)?;
+                if line.consume("}") {
+                    line.finish()?;
                     break;
                 }
-                if body.starts_keyword("for") {
-                    return Err(Error::at(body.position(), "nested `for` is not supported"));
+                line.reject_nested_for()?;
+                match line.generate_line()? {
+                    GenerateStmt::InitElement(init) => body.push(init),
+                    GenerateStmt::GenerateScalar { name, .. }
+                    | GenerateStmt::DeclareArray { name, .. } => {
+                        return Err(Error::at(
+                            name.position,
+                            "only array element initialization is allowed in a generate loop",
+                        ));
+                    }
+                    GenerateStmt::For { .. } => unreachable!(),
                 }
-                rows.push(body.input_row()?);
             }
-            statements.push(Statement::For(For { index, range, rows }));
+            generate.push(GenerateStmt::For {
+                variable,
+                range,
+                body,
+            });
         } else {
-            statements.push(Statement::Row(line.input_row()?));
+            generate.push(line.generate_line()?);
         }
     }
 
-    next_line("`constraints {`", false)?.block_header("constraints")?;
-    let mut constraints = Vec::new();
+    next_line("`input {`", false)?.block_header("input")?;
+    let mut input = Vec::new();
     loop {
-        let mut line = next_line("a constraint or `}`", false)?;
+        let mut line = next_line("an output line, `for`, or `}`", true)?;
         if line.consume("}") {
             line.finish()?;
             break;
         }
-        constraints.push(line.constraint()?);
+        if line.starts_keyword("for") {
+            let (variable, range) = line.for_header()?;
+            let mut rows = Vec::new();
+            loop {
+                let mut line = next_line("an output line or `}`", true)?;
+                if line.consume("}") {
+                    line.finish()?;
+                    break;
+                }
+                line.reject_nested_for()?;
+                rows.push(line.output_row()?);
+            }
+            input.push(InputStmt::For {
+                variable,
+                range,
+                rows,
+            });
+        } else {
+            input.push(InputStmt::Row(line.output_row()?));
+        }
     }
+
     if let Some(line) = lines.find(|line| !line.remaining().is_empty()) {
         return Err(Error::at(
             line.position(),
-            "unexpected text after constraints block",
+            "unexpected text after input block",
         ));
     }
-    Ok(Input {
-        statements,
-        constraints,
-    })
+    Ok(Program { generate, input })
 }
 
 struct Line<'a> {
@@ -86,6 +111,9 @@ struct Line<'a> {
 
 impl<'a> Line<'a> {
     fn new(number: usize, text: &'a str) -> Self {
+        let text = text
+            .strip_suffix('\n')
+            .map_or(text, |line| line.strip_suffix('\r').unwrap_or(line));
         Self {
             number,
             length: text.len(),
@@ -128,9 +156,7 @@ impl<'a> Line<'a> {
     }
 
     fn starts_keyword(&self, keyword: &str) -> bool {
-        self.remaining()
-            .strip_prefix(keyword)
-            .is_some_and(|rest| !rest.bytes().next().is_some_and(identifier_continue))
+        starts_keyword(self.remaining(), keyword)
     }
 
     fn finish(&self) -> Result<(), Error> {
@@ -169,10 +195,10 @@ impl<'a> Line<'a> {
         Ok(name)
     }
 
-    fn expression(&mut self) -> Result<Expr<'a>, Error> {
+    fn expression(&mut self, nesting: usize) -> Result<Expr<'a>, Error> {
         let position = self.position();
         let source = self.remaining();
-        let node = self.sum(0)?;
+        let node = self.sum(nesting)?;
         let source = &source[..source.len() - self.rest.len()];
         Ok(Expr {
             position,
@@ -181,7 +207,7 @@ impl<'a> Line<'a> {
         })
     }
 
-    fn sum(&mut self, nesting: usize) -> Result<ExprNode<Name<'a>>, Error> {
+    fn sum(&mut self, nesting: usize) -> Result<ExprNode<'a>, Error> {
         self.binary_chain(
             nesting,
             Self::product,
@@ -189,7 +215,7 @@ impl<'a> Line<'a> {
         )
     }
 
-    fn product(&mut self, nesting: usize) -> Result<ExprNode<Name<'a>>, Error> {
+    fn product(&mut self, nesting: usize) -> Result<ExprNode<'a>, Error> {
         self.binary_chain(
             nesting,
             Self::unary,
@@ -204,9 +230,9 @@ impl<'a> Line<'a> {
     fn binary_chain(
         &mut self,
         nesting: usize,
-        operand: fn(&mut Self, usize) -> Result<ExprNode<Name<'a>>, Error>,
+        operand: fn(&mut Self, usize) -> Result<ExprNode<'a>, Error>,
         operators: &[(&str, BinaryOp)],
-    ) -> Result<ExprNode<Name<'a>>, Error> {
+    ) -> Result<ExprNode<'a>, Error> {
         let first = operand(self, nesting)?;
         let mut rest = Vec::new();
         loop {
@@ -229,7 +255,7 @@ impl<'a> Line<'a> {
         }
     }
 
-    fn unary(&mut self, nesting: usize) -> Result<ExprNode<Name<'a>>, Error> {
+    fn unary(&mut self, nesting: usize) -> Result<ExprNode<'a>, Error> {
         let position = self.position();
         if nesting > MAX_EXPRESSION_NESTING {
             return Err(Error::at(
@@ -269,11 +295,19 @@ impl<'a> Line<'a> {
             return Ok(node);
         }
         match self.remaining().bytes().next() {
-            Some(byte) if identifier_start(byte) => self.variable_name().map(ExprNode::Variable),
+            Some(byte) if identifier_start(byte) => {
+                let name = self.variable_name()?;
+                if self.consume("[") {
+                    let element = self.element_ref(name, nesting + 1)?;
+                    Ok(ExprNode::Element(Box::new(element)))
+                } else {
+                    Ok(ExprNode::Variable(name))
+                }
+            }
             Some(byte) if byte.is_ascii_digit() => self.literal(position, false),
             _ => Err(Error::at(
                 position,
-                "expected an integer, scalar variable or `(`",
+                "expected an integer, variable, array element or `(`",
             )),
         }
     }
@@ -286,7 +320,7 @@ impl<'a> Line<'a> {
         digits
     }
 
-    fn literal(&mut self, position: Position, negative: bool) -> Result<ExprNode<Name<'a>>, Error> {
+    fn literal(&mut self, position: Position, negative: bool) -> Result<ExprNode<'a>, Error> {
         self.digits()
             .parse::<i128>()
             .ok()
@@ -295,60 +329,84 @@ impl<'a> Line<'a> {
             .ok_or_else(|| Error::at(position, "integer literal is outside the i64 range"))
     }
 
-    fn declaration(&mut self) -> Result<Declaration<'a>, Error> {
+    fn element_ref(&mut self, array: Name<'a>, nesting: usize) -> Result<ElementRef<'a>, Error> {
+        let index = self.expression(nesting)?;
+        self.expect("]")?;
+        Ok(ElementRef { array, index })
+    }
+
+    fn generate_line(&mut self) -> Result<GenerateStmt<'a>, Error> {
         let name = self.variable_name()?;
-        let length = if self.consume("[") {
-            let length = self.expression()?;
-            if self.remaining().starts_with("..") {
-                return Err(Error::at(
-                    self.position(),
-                    "expected an array length expression such as `A[N]`, found a range",
-                ));
+        let statement = if self.consume("[") {
+            if self.has_init_range() {
+                let target = self.element_ref(name, 1)?;
+                self.keyword("in")?;
+                let range = self.range()?;
+                GenerateStmt::InitElement(ElementInit { target, range })
+            } else {
+                let length = self.expression(0)?;
+                self.expect("]")?;
+                GenerateStmt::DeclareArray { name, length }
             }
-            self.expect("]")?;
-            Some(length)
         } else {
-            None
+            self.keyword("in")?;
+            let range = self.range()?;
+            GenerateStmt::GenerateScalar { name, range }
         };
-        Ok(Declaration { name, length })
+        self.finish()?;
+        Ok(statement)
     }
 
-    fn input_row(&mut self) -> Result<Row<'a>, Error> {
-        let position = self.position();
-        let mut declarations = Vec::new();
+    // Classify the brackets before parsing their expression, since a length
+    // starts at depth 0 and an element subscript starts at depth 1.
+    fn has_init_range(&self) -> bool {
+        let remaining = self.remaining();
+        let mut nested = 0;
+        for (offset, byte) in remaining.bytes().enumerate() {
+            match byte {
+                b'[' => nested += 1,
+                b']' if nested == 0 => {
+                    return starts_keyword(
+                        remaining[offset + 1..].trim_start_matches([' ', '\t']),
+                        "in",
+                    );
+                }
+                b']' => nested -= 1,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn output_row(&mut self) -> Result<OutputRow<'a>, Error> {
+        let position = Position {
+            line: self.number,
+            column: 1,
+        };
+        let mut items = Vec::new();
         while !self.remaining().is_empty() {
-            if !declarations.is_empty() && self.rest.len() == self.remaining().len() {
+            if !items.is_empty() && self.rest.len() == self.remaining().len() {
                 return Err(Error::at(
                     self.position(),
-                    "expected whitespace between declarations",
+                    "expected whitespace between output references",
                 ));
             }
-            declarations.push(self.declaration()?);
+            let name = self.variable_name()?;
+            let item = if self.consume("[") {
+                OutputRef::Element(self.element_ref(name, 1)?)
+            } else {
+                OutputRef::Name(name)
+            };
+            items.push(item);
         }
-        Ok(Row {
-            position,
-            declarations,
-        })
+        Ok(OutputRow { position, items })
     }
 
-    fn constraint(&mut self) -> Result<Constraint<'a>, Error> {
+    fn reject_nested_for(&self) -> Result<(), Error> {
         if self.starts_keyword("for") {
-            return Err(Error::at(
-                self.position(),
-                "`for` is only supported in `input`",
-            ));
+            return Err(Error::at(self.position(), "nested `for` is not supported"));
         }
-        let target = self.variable_name()?;
-        if self.remaining().starts_with('[') {
-            return Err(Error::at(
-                self.position(),
-                "constraints use a bare variable name, e.g. `A in 1..=10`",
-            ));
-        }
-        self.keyword("in")?;
-        let range = self.range()?;
-        self.finish()?;
-        Ok(Constraint { target, range })
+        Ok(())
     }
 
     fn for_header(&mut self) -> Result<(Name<'a>, RangeExpr<'a>), Error> {
@@ -363,7 +421,7 @@ impl<'a> Line<'a> {
 
     fn range(&mut self) -> Result<RangeExpr<'a>, Error> {
         let source = self.remaining();
-        let lower = self.expression()?;
+        let lower = self.expression(0)?;
         let position = self.position();
         for invalid in ["...", "..=="] {
             if self.consume(invalid) {
@@ -380,7 +438,7 @@ impl<'a> Line<'a> {
         } else {
             return Err(Error::at(position, "expected range operator `..` or `..=`"));
         };
-        let upper = self.expression()?;
+        let upper = self.expression(0)?;
         let source = &source[..source.len() - self.rest.len()];
         Ok(RangeExpr {
             lower,
@@ -397,4 +455,9 @@ fn identifier_start(byte: u8) -> bool {
 
 fn identifier_continue(byte: u8) -> bool {
     identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn starts_keyword(text: &str, keyword: &str) -> bool {
+    text.strip_prefix(keyword)
+        .is_some_and(|rest| !rest.bytes().next().is_some_and(identifier_continue))
 }

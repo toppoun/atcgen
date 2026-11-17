@@ -1,39 +1,59 @@
 use crate::error::Position;
 
-pub(crate) struct Input<'a> {
-    pub statements: Vec<Statement<'a>>,
-    pub constraints: Vec<Constraint<'a>>,
+pub(crate) struct Program<'a> {
+    pub generate: Vec<GenerateStmt<'a>>,
+    pub input: Vec<InputStmt<'a>>,
 }
 
-pub(crate) enum Statement<'a> {
-    Row(Row<'a>),
-    For(For<'a>),
+pub(crate) enum GenerateStmt<'a> {
+    GenerateScalar {
+        name: Name<'a>,
+        range: RangeExpr<'a>,
+    },
+    DeclareArray {
+        name: Name<'a>,
+        length: Expr<'a>,
+    },
+    InitElement(ElementInit<'a>),
+    For {
+        variable: Name<'a>,
+        range: RangeExpr<'a>,
+        body: Vec<ElementInit<'a>>,
+    },
 }
 
-pub(crate) struct Row<'a> {
+pub(crate) struct ElementInit<'a> {
+    pub target: ElementRef<'a>,
+    pub range: RangeExpr<'a>,
+}
+
+pub(crate) enum InputStmt<'a> {
+    Row(OutputRow<'a>),
+    For {
+        variable: Name<'a>,
+        range: RangeExpr<'a>,
+        rows: Vec<OutputRow<'a>>,
+    },
+}
+
+pub(crate) struct OutputRow<'a> {
     pub position: Position,
-    pub declarations: Vec<Declaration<'a>>,
+    pub items: Vec<OutputRef<'a>>,
 }
 
-pub(crate) struct For<'a> {
-    pub index: Name<'a>,
-    pub range: RangeExpr<'a>,
-    pub rows: Vec<Row<'a>>,
+pub(crate) enum OutputRef<'a> {
+    Name(Name<'a>),
+    Element(ElementRef<'a>),
 }
 
-pub(crate) struct Declaration<'a> {
-    pub name: Name<'a>,
-    pub length: Option<Expr<'a>>,
+pub(crate) struct ElementRef<'a, Scalar = Name<'a>, Array = Name<'a>> {
+    pub array: Array,
+    pub index: Expr<'a, Scalar, Array>,
 }
 
-pub(crate) struct Constraint<'a> {
-    pub target: Name<'a>,
-    pub range: RangeExpr<'a>,
-}
-
-pub(crate) struct RangeExpr<'a, Ref = Name<'a>> {
-    pub lower: Expr<'a, Ref>,
-    pub upper: Expr<'a, Ref>,
+pub(crate) struct RangeExpr<'a, Scalar = Name<'a>, Array = Name<'a>> {
+    pub lower: Expr<'a, Scalar, Array>,
+    pub upper: Expr<'a, Scalar, Array>,
     pub end: RangeEnd,
     pub source: &'a str,
 }
@@ -52,23 +72,24 @@ pub(crate) struct Located<T> {
 
 pub(crate) type Name<'a> = Located<&'a str>;
 
-pub(crate) struct Expr<'a, Ref = Name<'a>> {
+pub(crate) struct Expr<'a, Scalar = Name<'a>, Array = Name<'a>> {
     pub position: Position,
     pub source: &'a str,
-    pub node: ExprNode<Ref>,
+    pub node: ExprNode<'a, Scalar, Array>,
 }
 
-pub(crate) enum ExprNode<Ref> {
+pub(crate) enum ExprNode<'a, Scalar = Name<'a>, Array = Name<'a>> {
     Literal(i64),
-    Variable(Ref),
+    Variable(Scalar),
+    Element(Box<ElementRef<'a, Scalar, Array>>),
     Unary {
         op: Located<UnaryOp>,
-        operand: Box<ExprNode<Ref>>,
+        operand: Box<Self>,
     },
     Binary {
-        first: Box<ExprNode<Ref>>,
+        first: Box<Self>,
         // Operators of the same precedence are evaluated left to right.
-        rest: Vec<(Located<BinaryOp>, ExprNode<Ref>)>,
+        rest: Vec<(Located<BinaryOp>, Self)>,
     },
 }
 

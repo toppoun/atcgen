@@ -1,58 +1,54 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 #[test]
-fn cli_leaves_stdout_empty_when_generation_fails_after_a_row() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/empty-range.gen");
-    let output = run(&source);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.starts_with(&format!("{}:7:13: invalid range `N..N`", source.display())),
-        "{stderr}"
-    );
-}
-
-#[test]
 fn cli_sample_outputs_one_pair_per_iteration() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("sample.gen");
-    let output = run(&source);
+    let output = run(&source("sample.gen"));
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stderr.is_empty());
-    assert_eq!(output.stdout, b"4\n83 90\n46 99\n43 72\n69 99\n");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let mut lines = stdout.lines();
-    let iterations: usize = lines.next().unwrap().parse().unwrap();
-    let mut count = 0;
-    for line in lines {
-        let pair: Vec<i64> = line
-            .split_whitespace()
-            .map(|value| value.parse().unwrap())
-            .collect();
-        let [a, b] = pair[..] else {
-            panic!("expected two integers per row");
-        };
-        assert!((1..=99).contains(&a));
-        assert!((a + 1..=100).contains(&b));
-        count += 1;
-    }
-    assert_eq!(count, iterations);
+    assert_eq!(output.stdout, b"3\n83 90\n46 99\n43 72\n");
 }
 
 #[test]
-fn cli_keeps_stdout_empty_when_a_later_iteration_fails() {
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/empty-loop-constraint.gen");
+fn cli_expands_whole_arrays() {
+    let output = run(&source("tests/fixtures/whole-arrays.gen"));
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, b"2\n\n5 -6 9 2 -6\n");
+}
+
+#[test]
+fn cli_leaves_stdout_empty_when_generation_fails_after_a_value() {
+    assert_error("empty-range.gen", "3:13: invalid range `N..N`");
+}
+
+#[test]
+fn cli_leaves_stdout_empty_when_a_later_generation_iteration_fails() {
+    assert_error("empty-loop-range.gen", "5:20: invalid range `i..N`");
+}
+
+#[test]
+fn cli_leaves_stdout_empty_when_a_later_output_iteration_fails() {
+    assert_error(
+        "uninitialized-output.gen",
+        "11:9: array element `A[3]` is uninitialized",
+    );
+}
+
+fn assert_error(file: &str, expected: &str) {
+    let source = source(&format!("tests/fixtures/{file}"));
     let output = run(&source);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.starts_with(&format!("{}:9:13: invalid range `i..N`", source.display())),
+        stderr.starts_with(&format!("{}:{expected}", source.display())),
         "{stderr}"
     );
+}
+
+fn source(file: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(file)
 }
 
 fn run(source: &Path) -> Output {

@@ -1,0 +1,13 @@
+generate {
+    N in 2..=2
+    A[N]
+    A[N] in -6..=-6
+    A[1] in 5..=5
+    B[1]
+    B[1] in 9..=9
+}
+input {
+    N
+
+    A B N A[N]
+}
