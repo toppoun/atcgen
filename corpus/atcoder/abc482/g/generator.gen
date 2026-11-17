@@ -1,0 +1,46 @@
+generate {
+    T in 2..=2
+    N1 in 2..=16
+    M1 in 1..=(N1-1)
+    A1[N1]
+    U1[M1]
+    V1[M1]
+    for i in 1..=N1 {
+        A1[i] in 1..=(N1-1)
+    }
+    for i in 1..=M1 {
+        U1[i] in 1..=i
+        V1[i] in (i+1)..=(i+1)
+    }
+
+    N2 in 3..=16
+    M2 in (N2-1)..=(2*N2-3)
+    A2[N2]
+    U2[M2]
+    V2[M2]
+    for i in 1..=N2 {
+        A2[i] in 1..=(N2-1)
+    }
+    for i in 1..N2 {
+        U2[i] in 1..=1
+        V2[i] in (i+1)..=(i+1)
+    }
+    for i in N2..=M2 {
+        U2[i] in 2..=2
+        V2[i] in (i-N2+3)..=(i-N2+3)
+    }
+}
+
+input {
+    T
+    N1 M1
+    A1
+    for i in 1..=M1 {
+        U1[i] V1[i]
+    }
+    N2 M2
+    A2
+    for i in 1..=M2 {
+        U2[i] V2[i]
+    }
+}

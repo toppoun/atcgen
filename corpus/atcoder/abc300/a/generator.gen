@@ -1,0 +1,15 @@
+generate {
+    N in 1..=300
+    A in 1..=1000
+    B in 1..=1000
+    AnswerIndex in 1..=N
+    C[N]
+    for i in 1..=N {
+        C[i] in ((A+B+i-AnswerIndex+1999)%2000+1)..=((A+B+i-AnswerIndex+1999)%2000+1)
+    }
+}
+
+input {
+    N A B
+    C
+}

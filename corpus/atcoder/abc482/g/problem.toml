@@ -1,0 +1,17 @@
+contest = "abc482"
+problem = "g"
+url = "https://atcoder.jp/contests/abc482/tasks/abc482_g"
+status = "supported"
+coverage = "restricted"
+description = "先頭にテストケース数 T。各ケースは N M の行、長さ N の配列 A の行、M 行の無向辺からなる。"
+constraints = [
+    "1 ≤ T ≤ 10、2 ≤ N ≤ 500、1 ≤ M ≤ N(N-1)/2。すべて整数。",
+    "各ケースで 1 ≤ A_i ≤ N-1、sum(A) ≤ 500。",
+    "各辺で 1 ≤ u_i < v_i ≤ N。ケース内の辺の組 (u_i,v_i) は重複しない。",
+    "全ケースの sum(A)^3 の総和は 500^3 以下、M の総和は 200000 以下。",
+]
+limitations = [
+    "ケースを個別に記述して T=2 に固定。1 ケース目は番号の小さい親につないだ木と孤立頂点。2 ケース目は頂点 1 を中心とする星に、頂点 2 からの辺を追加できる。",
+    "N を最大 16 として各ケースの sum(A) を最大 240 に抑える。2×240^3 ≤ 500^3 かつ M の合計は最大 44 のため、抽選間の調整なしで全体の上限を保証する。",
+]
+missing_features = []

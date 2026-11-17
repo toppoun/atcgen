@@ -1,0 +1,9 @@
+contest = "abc400"
+problem = "b"
+url = "https://atcoder.jp/contests/abc400/tasks/abc400_b"
+status = "supported"
+coverage = "representative"
+description = "1 行に独立した値域を持つ整数 N M"
+constraints = ["1 ≤ N ≤ 1000000000、1 ≤ M ≤ 100。"]
+limitations = []
+missing_features = []

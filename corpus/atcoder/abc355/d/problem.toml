@@ -1,0 +1,11 @@
+contest = "abc355"
+problem = "d"
+url = "https://atcoder.jp/contests/abc355/tasks/abc355_d"
+status = "supported"
+coverage = "restricted"
+description = "1 行目に N、続く N 行に区間の両端 l_i r_i"
+constraints = ["2 ≤ N ≤ 500000、0 ≤ l_i < r_i ≤ 1000000000。すべて整数。"]
+limitations = [
+    "繰り返し検証の実行時間を抑えるため N は 2..=64。端点は公式の値域を使い、右端の下限を左端 + 1 とする。",
+]
+missing_features = []

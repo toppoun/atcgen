@@ -1,0 +1,19 @@
+generate {
+    N in 1..=100
+    M in 1..=100
+    Offset in 0..=199
+    A[N]
+    B[M]
+    for i in 1..=N {
+        A[i] in (((i-1)*37+Offset)%200+1)..=(((i-1)*37+Offset)%200+1)
+    }
+    for i in 1..=M {
+        B[i] in (((N+i-1)*37+Offset)%200+1)..=(((N+i-1)*37+Offset)%200+1)
+    }
+}
+
+input {
+    N M
+    A
+    B
+}

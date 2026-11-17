@@ -1,0 +1,8 @@
+generate {
+    A in 2..=9
+    B in A..=9
+}
+
+input {
+    A B
+}

@@ -1,0 +1,14 @@
+contest = "abc355"
+problem = "b"
+url = "https://atcoder.jp/contests/abc355/tasks/abc355_b"
+status = "supported"
+coverage = "restricted"
+description = "1 行目に N M、続く 2 行に長さ N の配列 A と長さ M の配列 B"
+constraints = [
+    "1 ≤ N, M ≤ 100、1 ≤ A_i, B_j ≤ 200。すべて整数。",
+    "A と B を合わせた全要素が相異なる。",
+]
+limitations = [
+    "200 と互いに素な歩幅 37 の剰余列を生成し、開始位置を変えて A と B に切り分ける。値の組と順序はこの剰余列に限られる。",
+]
+missing_features = []

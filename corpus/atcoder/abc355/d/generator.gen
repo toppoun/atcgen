@@ -1,0 +1,16 @@
+generate {
+    N in 2..=64
+    L[N]
+    R[N]
+    for i in 1..=N {
+        L[i] in 0..1000000000
+        R[i] in (L[i]+1)..=1000000000
+    }
+}
+
+input {
+    N
+    for i in 1..=N {
+        L[i] R[i]
+    }
+}

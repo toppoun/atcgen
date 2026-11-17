@@ -1,0 +1,9 @@
+contest = "abc320"
+problem = "a"
+url = "https://atcoder.jp/contests/abc320/tasks/abc320_a"
+status = "supported"
+coverage = "representative"
+description = "1 行に整数 A B"
+constraints = ["2 ≤ A ≤ B ≤ 9。"]
+limitations = []
+missing_features = []

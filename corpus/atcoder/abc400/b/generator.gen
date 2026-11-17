@@ -1,0 +1,8 @@
+generate {
+    N in 1..=1000000000
+    M in 1..=100
+}
+
+input {
+    N M
+}

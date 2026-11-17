@@ -1,0 +1,12 @@
+contest = "abc385"
+problem = "e"
+url = "https://atcoder.jp/contests/abc385/tasks/abc385_e"
+status = "supported"
+coverage = "restricted"
+description = "1 行目に頂点数 N、その後に木の N-1 辺を 1 行ずつ出力"
+constraints = ["3 ≤ N ≤ 300000、1 ≤ u_i < v_i ≤ N。すべて整数で、グラフは木。"]
+limitations = [
+    "各頂点 v=2..N を番号の小さい親 1..v-1 の 1 頂点につなぎ、v の昇順で出力する。頂点 1 を根としたときに親の番号が子より小さい木に限られる。",
+    "繰り返し検証の実行時間を抑えるため N は 3..=128。",
+]
+missing_features = []
