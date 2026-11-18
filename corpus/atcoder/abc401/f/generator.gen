@@ -1,0 +1,33 @@
+generate {
+    N1 in 1..=128
+    N2 in 1..=128
+    Cap1 in (N1-1+1/N1)..=(N1-1+1/N1)
+    Cap2 in (N2-1+1/N2)..=(N2-1+1/N2)
+    P1[N1]
+    Parent1[Cap1]
+    Order1[Cap1]
+    P2[N2]
+    Parent2[Cap2]
+    Order2[Cap2]
+    P1 in unique(1..=N1)
+    P2 in unique(1..=N2)
+    for i in 1..N1 {
+        Parent1[i] in 1..=i
+    }
+    for i in 1..N2 {
+        Parent2[i] in 1..=i
+    }
+    Order1 in unique(1..=Cap1)
+    Order2 in unique(1..=Cap2)
+}
+
+input {
+    N1
+    for i in 1..N1 {
+        P1[Parent1[Order1[i]]] P1[Order1[i]+1]
+    }
+    N2
+    for i in 1..N2 {
+        P2[Parent2[Order2[i]]] P2[Order2[i]+1]
+    }
+}

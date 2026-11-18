@@ -1,0 +1,44 @@
+generate {
+    N in 1..=200000
+    M in 1..=200000
+    Q in 1..=200000
+    Anchor in 1..=Q
+    Kind[Q]
+    A[Q]
+    B[Q]
+    C[Q]
+    for i in 1..=Q {
+        if i == Anchor {
+            Kind[i] in 3..=3
+        } else {
+            Kind[i] in 1..=3
+        }
+        if Kind[i] == 1 {
+            A[i] in 1..=M
+            B[i] in A[i]..=M
+            C[i] in 1..=1000000000
+        } else {
+            A[i] in 1..=N
+            if Kind[i] == 2 {
+                C[i] in 1..=1000000000
+            } else {
+                B[i] in 1..=M
+            }
+        }
+    }
+}
+
+input {
+    N M Q
+    for i in 1..=Q {
+        if Kind[i] == 1 {
+            Kind[i] A[i] B[i] C[i]
+        } else {
+            if Kind[i] == 2 {
+                Kind[i] A[i] C[i]
+            } else {
+                Kind[i] A[i] B[i]
+            }
+        }
+    }
+}

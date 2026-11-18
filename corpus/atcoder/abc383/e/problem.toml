@@ -1,0 +1,20 @@
+contest = "abc383"
+problem = "e"
+task_id = "abc383_e"
+url = "https://atcoder.jp/contests/abc383/tasks/abc383_e"
+status = "supported"
+coverage = "restricted"
+plan_id = "P19"
+description = "木を含む候補辺集合と重み、頂点の互いに素な二分割から復元抽選したA/B。"
+constraints = [
+    "2 ≤ N ≤ 200000、N-1 ≤ M ≤ min(N(N-1)/2,200000)、1 ≤ K ≤ N。",
+    "1 ≤ ui < vi ≤ N、1 ≤ wi ≤ 10^9、単純連結。Ai,Biは1..N、全i,jでAi≠Bj。各配列内部の重複は許可。",
+]
+limitations = [
+    "通常N≤128、全候補を保存するため大規模疎グラフを通常生成しない。",
+    "N=M=K=200000の別の省容量プローブも1000003トークンでDSL出力上限を超える。",
+]
+missing_features = [
+    "大規模疎グラフを構成するための配列処理・保存領域。",
+    "出力トークン上限（本質的な仕様衝突）。",
+]

@@ -1,0 +1,65 @@
+generate {
+    N in 2..=128
+    Candidates in (N*(N-1)/2)..=(N*(N-1)/2)
+    K in 1..=N
+    Cut in 1..=N-1
+    Parent[N-1]
+    U[Candidates]
+    V[Candidates]
+    Keep[Candidates]
+    Prefix[Candidates+1]
+    Order[Candidates]
+    W[Candidates]
+    Label[N]
+    A[K]
+    B[K]
+    for i in 1..N {
+        Parent[i] in 1..=i
+    }
+    for v in 2..=N {
+        for u in 1..v {
+            U[(v-1)*(v-2)/2+u] in u..=u
+            V[(v-1)*(v-2)/2+u] in v..=v
+            if Parent[v-1] == u {
+                Keep[(v-1)*(v-2)/2+u] in 1..=1
+            } else {
+                Keep[(v-1)*(v-2)/2+u] in 0..=1
+            }
+        }
+    }
+    Prefix[1] in 0..=0
+    for e in 1..=Candidates {
+        Prefix[e+1] in (Prefix[e]+Keep[e])..=(Prefix[e]+Keep[e])
+        W[e] in 1..=1000000000
+    }
+    M in Prefix[Candidates+1]..=Prefix[Candidates+1]
+    Label in unique(1..=N)
+    Order in unique(1..=Candidates)
+    for i in 1..=K {
+        A[i] in 1..=Cut
+        B[i] in (Cut+1)..=N
+    }
+}
+
+input {
+    N M K
+    for i in 1..=Candidates {
+        if Keep[Order[i]] == 1 {
+            if Label[U[Order[i]]] < Label[V[Order[i]]] {
+                Label[U[Order[i]]] Label[V[Order[i]]] W[Order[i]]
+            } else {
+                Label[V[Order[i]]] Label[U[Order[i]]] W[Order[i]]
+            }
+        }
+    }
+    row {
+        for i in 1..=K {
+            Label[A[i]]
+        }
+    }
+    row {
+        for i in 1..=K {
+            Label[B[i]]
+        }
+    }
+}

@@ -1,0 +1,16 @@
+contest = "abc326"
+problem = "d"
+task_id = "abc326_d"
+url = "https://atcoder.jp/contests/abc326/tasks/abc326_d"
+status = "supported"
+coverage = "representative"
+plan_id = "P14"
+description = "NとR/Cの文字を独立生成。盤面の存在は入力制約に含めない。"
+constraints = [
+    "3 ≤ N ≤ 5。R,Cは長さNでA/B/Cのみ。",
+]
+limitations = [
+    "繰り返しや解なし入力も許可する。",
+]
+missing_features = [
+]

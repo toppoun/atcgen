@@ -1,0 +1,19 @@
+contest = "abc420"
+problem = "c"
+task_id = "abc420_c"
+url = "https://atcoder.jp/contests/abc420/tasks/abc420_c"
+status = "supported"
+coverage = "restricted"
+plan_id = "P25"
+description = "2整数配列とA/B文字による更新列。解を計算する必要はない。"
+constraints = [
+    "1 ≤ N,Q ≤ 200000、Ai,Bi,Viは1..10^9の整数。",
+    "ciはA/B、Xiは1..N。",
+]
+limitations = [
+    "通常N,Q≤100000。",
+    "N=Q=200000では1000002トークン。別条件N=200000,Q=199999の大きな固定値では999999トークンでも8399994バイトとなりDSL上限を超える。",
+]
+missing_features = [
+    "出力トークン上限・出力バイト上限（保存方法の改善では解消しない）。",
+]

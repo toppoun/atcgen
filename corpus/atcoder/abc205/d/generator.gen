@@ -1,0 +1,25 @@
+generate {
+    N in 1..=100000
+    Q in 1..=100000
+    A[N+1]
+    K[Q]
+    A[1] in 0..=0
+    for i in 1..=N {
+        A[i+1] in (A[i]+1)..=(1000000000000000000-(N-i))
+    }
+    for i in 1..=Q {
+        K[i] in 1..=1000000000000000000
+    }
+}
+
+input {
+    N Q
+    row {
+        for i in 1..=N {
+            A[i+1]
+        }
+    }
+    for i in 1..=Q {
+        K[i]
+    }
+}

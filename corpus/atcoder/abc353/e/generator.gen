@@ -1,0 +1,24 @@
+generate {
+    N in 2..=300000
+    Length in 1..=(300000/N)
+    PrefixLength in 0..=Length
+    Prefix: string[Length]
+    S[N]: string[Length]
+    for j in 1..=Length {
+        Prefix[j] in "abcdefghijklmnopqrstuvwxyz"
+    }
+    for i in 1..=N {
+        for j in 1..=Length {
+            if j <= PrefixLength {
+                S[i][j] = Prefix[j]
+            } else {
+                S[i][j] in "abcdefghijklmnopqrstuvwxyz"
+            }
+        }
+    }
+}
+
+input {
+    N
+    S
+}

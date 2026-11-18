@@ -1,0 +1,15 @@
+generate {
+    N in 3..=5
+    R: string[N]
+    C: string[N]
+    for i in 1..=N {
+        R[i] in "ABC"
+        C[i] in "ABC"
+    }
+}
+
+input {
+    N
+    R
+    C
+}

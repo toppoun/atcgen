@@ -18,6 +18,7 @@ from time import perf_counter
 import tomllib
 
 import corpus_batch2 as batch2
+import corpus_batch3 as batch3
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,9 @@ BATCH1 = (
     ("abc216", "d"), ("abc339", "f"),
 )
 BATCH1_RESULTS: dict[str, dict] = {}
+INITIAL_RESULTS: dict[str, dict] = {}
+ACTIVE_INITIAL: tuple[str, str] | None = None
+INITIAL_PENDING: dict[tuple[str, int], bytes] = {}
 
 
 def require(condition: bool, message: str) -> None:
@@ -422,6 +426,7 @@ CHECKERS: dict[tuple[str, str], Callable[[Input], None]] = {
     ("abc482", "g"): check_abc482_g,
 }
 CHECKERS.update(batch2.CHECKERS)
+CHECKERS.update(batch3.CHECKERS)
 
 
 def read_metadata(path: Path) -> tuple[str, str]:
@@ -481,6 +486,7 @@ def build_binary() -> Path:
 
 
 def generate(binary: Path, generator: Path, seed: int) -> bytes:
+    started = perf_counter()
     result = subprocess.run(
         [str(binary), "generate", str(generator), "--seed", str(seed)],
         cwd=ROOT,
@@ -491,7 +497,33 @@ def generate(binary: Path, generator: Path, seed: int) -> bytes:
         require(not result.stdout, "generation failed after writing partial stdout")
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"atcgen exited with code {result.returncode}: {detail or '(no diagnostic)'}")
+    elapsed = perf_counter() - started
+    if ACTIVE_INITIAL is not None:
+        record_initial_generation(generator, seed, result.stdout, elapsed)
     return result.stdout
+
+
+def record_initial_generation(generator: Path, seed: int, output: bytes, elapsed: float) -> None:
+    """Observe legacy calls without altering their sources, seeds or checkers."""
+    label = "/".join(ACTIVE_INITIAL)
+    result = INITIAL_RESULTS[label]
+    digest = hashlib.sha256(generator.read_bytes()).hexdigest()
+    key = digest, seed
+    record = next((r for r in result["conditions"] if (r["source_sha256"], r["seed"]) == key), None)
+    if record is None:
+        started = perf_counter()
+        case = Input(output)
+        CHECKERS[ACTIVE_INITIAL](case)
+        case.finish()
+        record = {"profile": "normal" if digest == result["source_sha256"] and seed in SEEDS else f"fixed-{digest[:12]}",
+                  "seed": seed, "source_sha256": digest, "status": "passed", "generate_seconds": elapsed,
+                  "check_seconds": perf_counter() - started, "output_bytes": len(output),
+                  "output_tokens": len(output.split()), "output_sha256": hashlib.sha256(output).hexdigest()}
+        result["conditions"].append(record)
+        INITIAL_PENDING[key] = output
+    elif not record.get("reproducible"):
+        require(output == INITIAL_PENDING.pop(key), "legacy observer: byte replay mismatch")
+        record.update(replay_seconds=elapsed, reproducible=True)
 
 
 def _fix_declarations(source: str, replacements: dict[str, str]) -> str:
@@ -956,6 +988,8 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
         return verify_batch1_problem(binary, path)
     if problem in batch2.BATCH2:
         return batch2.verify_problem(binary, path, generate, Input, SEEDS)
+    if problem in batch3.BATCH3:
+        return batch3.verify_problem(binary, path, generate, Input, SEEDS)
 
     outputs = set()
     boundaries = BOUNDARY_SEEDS.get(problem, {})
@@ -1010,14 +1044,19 @@ def batch1_summary(result: dict) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global ACTIVE_INITIAL
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, help="write batch conditions, timings, and resource bounds as JSON")
     args = parser.parse_args(argv)
     if args.report is not None:
-        require(args.report.resolve() != (ROOT / "corpus/reports/phase7b.json").resolve(),
-                "phase7b.json is a preserved historical report; choose another report path")
+        for historical in ("phase7b.json", "phase7c.json"):
+            require(args.report.resolve() != (ROOT / "corpus/reports" / historical).resolve(),
+                    f"{historical} is a preserved historical report; choose another report path")
     BATCH1_RESULTS.clear()
     batch2.RESULTS.clear()
+    batch3.RESULTS.clear()
+    INITIAL_RESULTS.clear()
+    INITIAL_PENDING.clear()
     paths = sorted(CORPUS.rglob("problem.toml"))
     if not paths:
         print(f"FAIL: no problem.toml files under {CORPUS}")
@@ -1052,17 +1091,28 @@ def main(argv: list[str] | None = None) -> int:
         status, coverage = entries[path]
         classification = f"{status}/{coverage}"
         if status != "supported":
+            if (path.parent.parent.name, path.parent.name) == ("xmascon18", "j"):
+                batch3.verify_unsupported(Input)
             print(f"SKIP {label}: {classification}")
             continue
 
         try:
             if binary is None:
                 raise ValueError("atcgen build failed")
+            problem = path.parent.parent.name, path.parent.name
+            if problem not in (*BATCH1, *batch2.BATCH2, *batch3.BATCH3):
+                source = path.with_name("generator.gen").read_bytes()
+                INITIAL_RESULTS[label] = {"conditions": [], "source_sha256": hashlib.sha256(source).hexdigest(),
+                                          "dsl_bytes": len(source), "dsl_nonblank_lines": sum(bool(x.strip()) for x in source.splitlines()),
+                                          "dsl_physical_lines": len(source.splitlines())}
+                ACTIVE_INITIAL = problem
             seed_count, distinct = verify_problem(binary, path)
         except ValueError as error:
             failures[path] = str(error)
             print(f"FAIL {label}: {classification}: {error}")
-        else:
+        finally:
+            ACTIVE_INITIAL = None
+        if path not in failures:
             verified += 1
             boundaries = {
                 "abc400/d": ", 5 fixed dimensions x 2 seeds",
@@ -1070,7 +1120,7 @@ def main(argv: list[str] | None = None) -> int:
                 "abc300/a": ", 8 fixed profiles x 2 seeds, 14 fixed-header diversity seeds",
                 "abc385/e": ", 3 fixed sizes x 2 seeds (including N=300000)",
             }.get(label, "")
-            measured = {**BATCH1_RESULTS, **batch2.RESULTS}
+            measured = {**INITIAL_RESULTS, **BATCH1_RESULTS, **batch2.RESULTS, **batch3.RESULTS}
             if label in measured:
                 result = measured[label]
                 result.update(status=status, coverage=coverage)
@@ -1093,7 +1143,9 @@ def main(argv: list[str] | None = None) -> int:
         report = {"report_version": 1, "environment": {"python": platform.python_version(),
                   "platform": platform.platform(), "binary_profile": "debug", "timeout_seconds": 30},
                   "registered": len(paths), "verified": verified, "failures": len(failures),
-                  "statuses": dict(statuses), "batch1": BATCH1_RESULTS, "batch2": batch2.RESULTS}
+                  "statuses": dict(statuses), "batch1": BATCH1_RESULTS, "batch2": batch2.RESULTS,
+                  "initial": INITIAL_RESULTS, "batch3": batch3.RESULTS}
+        report.update(batch3.report_catalog(paths, {**INITIAL_RESULTS, **BATCH1_RESULTS, **batch2.RESULTS, **batch3.RESULTS}, ROOT))
         args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return int(bool(failures))
 

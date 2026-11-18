@@ -1,0 +1,19 @@
+contest = "abc353"
+problem = "e"
+task_id = "abc353_e"
+url = "https://atcoder.jp/contests/abc353/tasks/abc353_e"
+status = "supported"
+coverage = "restricted"
+plan_id = "P29"
+description = "共通幅の文字列配列と共通接頭辞を同一行に出力。"
+constraints = [
+    "2 ≤ N ≤ 300000。各文字列は非空英小文字列、総長≤300000。重複可。",
+    "N個の文字列は1行にスペース区切りで与える。",
+]
+limitations = [
+    "通常は全N文字列の長さが共通L。NL≤300000を構成で保証する。",
+    "異長文字列や真の接頭辞関係は通常生成できない。共通接頭辞と異なる末尾の混在は固定条件で確認する。",
+]
+missing_features = [
+    "異長文字列配列と総文字数の資源管理。",
+]

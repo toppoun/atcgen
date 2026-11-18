@@ -1,0 +1,18 @@
+generate {
+    N in 1..=10
+    Choice[N]
+    A[N]
+    for i in 1..=N {
+        Choice[i] in 0..=1
+        if Choice[i] == 0 {
+            A[i] in -1..=-1
+        } else {
+            A[i] in 1..=N
+        }
+    }
+}
+
+input {
+    N
+    A
+}

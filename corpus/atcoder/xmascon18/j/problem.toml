@@ -1,0 +1,20 @@
+contest = "xmascon18"
+problem = "j"
+task_id = "xmascon18_j"
+url = "https://atcoder.jp/contests/xmascon18/tasks/xmascon18_j"
+status = "unsupported"
+coverage = "none"
+plan_id = "P11"
+description = "必須のUnicodeを現行DSLで出力できないため生成器なし。独立チェッカーのみ登録。"
+constraints = [
+    "1 ≤ |S| ≤ 100000（Unicode文字数）。UTF-8、BOMなし。",
+    "標準漢数字〇一二三四五六七八九十百千万億と演算aのb乗からなる正しい式。六はU+516D。",
+]
+limitations = [
+    "ASCII出力による代替生成は行わない。生成・再現性の分母には含めない。",
+    "Unicode対応後も標準漢数字の表記規則と入れ子の式文法を構成する機能が必要。",
+]
+missing_features = [
+    "Unicode文字型・文字列出力。",
+    "標準漢数字と再帰的な式文法の生成。",
+]

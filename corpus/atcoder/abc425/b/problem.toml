@@ -1,0 +1,16 @@
+contest = "abc425"
+problem = "b"
+task_id = "abc425_b"
+url = "https://atcoder.jp/contests/abc425/tasks/abc425_b"
+status = "supported"
+coverage = "representative"
+plan_id = "P10"
+description = "-1または1..Nを各位置で抽選。重複も補完不能な指定も許可。"
+constraints = [
+    "1 ≤ N ≤ 10。Aiは-1または1..Nの整数。",
+]
+limitations = [
+    "順列への補完可能性は検査・保証しない。",
+]
+missing_features = [
+]

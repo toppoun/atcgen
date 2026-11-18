@@ -1,0 +1,27 @@
+generate {
+    N in 1..=100000
+    Q in 1..=100000
+    A[N]
+    B[N]
+    X[Q]
+    V[Q]
+    Kind[Q]: string[1]
+    for i in 1..=N {
+        A[i] in 1..=1000000000
+        B[i] in 1..=1000000000
+    }
+    for i in 1..=Q {
+        Kind[i][1] in "AB"
+        X[i] in 1..=N
+        V[i] in 1..=1000000000
+    }
+}
+
+input {
+    N Q
+    A
+    B
+    for i in 1..=Q {
+        Kind[i] X[i] V[i]
+    }
+}

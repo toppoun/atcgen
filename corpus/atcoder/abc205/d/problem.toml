@@ -1,0 +1,17 @@
+contest = "abc205"
+problem = "d"
+task_id = "abc205_d"
+url = "https://atcoder.jp/contests/abc205/tasks/abc205_d"
+status = "supported"
+coverage = "representative"
+plan_id = "P07"
+description = "後続要素の余地を予約した厳密増加配列と独立クエリ。"
+constraints = [
+    "1 ≤ N,Q ≤ 100000。",
+    "1 ≤ A1 < ... < AN ≤ 10^18。1 ≤ Ki ≤ 10^18。すべて整数。",
+]
+limitations = [
+    "前要素+1から10^18-(N-i)の間で抽選する。一般の増加列を表せるが一様分布ではない。",
+]
+missing_features = [
+]

@@ -1,0 +1,17 @@
+contest = "abc253"
+problem = "f"
+task_id = "abc253_f"
+url = "https://atcoder.jp/contests/abc253/tasks/abc253_f"
+status = "supported"
+coverage = "representative"
+plan_id = "P24"
+description = "アンカーを種別3に固定し、3種のクエリを値域内で生成。"
+constraints = [
+    "1 ≤ N,M,Q ≤ 200000。",
+    "1 l r x: 1≤l≤r≤M、1≤x≤10^9。2 i x: 1≤i≤N、1≤x≤10^9。3 i j: 1≤i≤N、1≤j≤M。種別3が少なくとも1回。",
+]
+limitations = [
+    "行列値は計算しない。3の位置をアンカーとして確保し、その他の種別・値は自由に抽選する。",
+]
+missing_features = [
+]

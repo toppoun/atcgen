@@ -1,0 +1,19 @@
+contest = "abc401"
+problem = "f"
+task_id = "abc401_f"
+url = "https://atcoder.jp/contests/abc401/tasks/abc401_f"
+status = "supported"
+coverage = "restricted"
+plan_id = "P20"
+description = "各木に親配列と頂点U1、辺U1を用いる。N=1は辺を出力しない。"
+constraints = [
+    "1 ≤ N1,N2 ≤ 200000。各木の頂点番号はそれぞれ1..N、辺はN-1本で連結・非巡回。",
+]
+limitations = [
+    "通常N1,N2≤128。各木単独の最大値も別条件で検証する。",
+    "両木200000では今回の3配列方式の合計1199996セルが上限超過。DSL一般の不可能性は意味しない。",
+    "各木の形・ラベル・辺順を表現できる範囲でランダム化するが、形の一様性は主張しない。",
+]
+missing_features = [
+    "複数構造で共有する保存容量と領域再利用。",
+]

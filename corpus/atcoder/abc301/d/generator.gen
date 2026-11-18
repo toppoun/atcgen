@@ -1,0 +1,13 @@
+generate {
+    Length in 1..=60
+    N in 1..=1000000000000000000
+    S: string[Length]
+    for j in 1..=Length {
+        S[j] in "01?"
+    }
+}
+
+input {
+    S
+    N
+}

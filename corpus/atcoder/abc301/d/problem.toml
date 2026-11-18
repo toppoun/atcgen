@@ -1,0 +1,17 @@
+contest = "abc301"
+problem = "d"
+task_id = "abc301_d"
+url = "https://atcoder.jp/contests/abc301/tasks/abc301_d"
+status = "supported"
+coverage = "representative"
+plan_id = "P04"
+description = "01?文字列とNを独立生成。解の存在や先頭非零を要求しない。"
+constraints = [
+    "1 ≤ |S| ≤ 60、Sの文字は0/1/?。",
+    "1 ≤ N ≤ 10^18、整数。",
+]
+limitations = [
+    "任意の許可文字列とNが抽選範囲に入る。分布の一様性は主張しない。",
+]
+missing_features = [
+]
