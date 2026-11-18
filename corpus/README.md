@@ -1,6 +1,6 @@
 # AtCoder コーパス
 
-AtCoder の公式問題を使い、Phase 6-E-B までの DSL が表現できる入力形式と制約を継続的に検証します。Phase 6-E-C では ABC355-B と ABC300-A に U1（除外付き重複なし一括初期化）を適用し、Phase 6-E-D では ABC385-E の頂点ラベルと辺順をU1で抽選します。Phase 7-Bでは、[拡張計画](../docs/CORPUS_EXPANSION_PLAN.md)の第1バッチ10問を追加し、**旧10問＋新10問の20問**を登録しました。DSL本体は変更していません。生成器と制約チェッカーは回帰テストにも使えます。各問題の公式URLと入力形式・制約の要約は `problem.toml` に記録します。 [DSL 言語仕様](../docs/DSL_SPEC.md)
+AtCoderの公式問題を使い、現行DSLが表現できる入力形式と制約を継続的に検証します。Phase 6-E-CではABC355-BとABC300-A、Phase 6-E-DではABC385-EにU1を適用しました。[拡張計画](../docs/CORPUS_EXPANSION_PLAN.md)で固定した第1バッチを7-B、第2バッチを7-Cで追加し、**初期10問＋第1バッチ10問＋第2バッチ10問の30問**を登録しています。7-B/7-CでDSL本体は変更していません。生成器と制約チェッカーは回帰テストにも使えます。公式URLと入力制約・生成範囲の正本は各 `problem.toml` です。 [DSL言語仕様](../docs/DSL_SPEC.md)
 
 ## ディレクトリ構成
 
@@ -72,7 +72,7 @@ ABC385-E は通常の14seedでは `N=3..128` を維持し、別に `N=3,64,30000
 
 ## Phase 7-Bの第1バッチ
 
-新規10問は `supported=10 / format-only=0 / unsupported=0`、coverageは `representative=6 / restricted=4 / none=0`。全20問では `supported=20`、`representative=12 / restricted=8` です。7-Aの予測分類は維持しました。公式ページを再確認し、解法・出力の条件を入力制約として追加しない独立チェッカーを用意しています。
+第1バッチ10問は `supported=10 / format-only=0 / unsupported=0`、coverageは `representative=6 / restricted=4 / none=0`。7-B完了時点の20問では `supported=20`、`representative=12 / restricted=8` です。7-Aの予測分類は維持しました。公式ページを再確認し、解法・出力の条件を入力制約として追加しない独立チェッカーを用意しています。
 
 | ID / 問題 | coverage | 生成と制限、固定境界 |
 | --- | --- | --- |
@@ -92,10 +92,10 @@ ABC385-E は通常の14seedでは `N=3..128` を維持し、別に `N=3,64,30000
 生成時間（CLIの解析から整形まで）と外部チェッカー時間（Input読込み・全制約・行数終端確認）を分けて測定し、通常seedと固定境界を別集計します。追加の資源監査・出力ハッシュ・比較処理の時間はチェッカー時間に含めません。結果を保存するには次を実行します。
 
 ```sh
-python scripts/verify_corpus.py --report corpus/reports/phase7b.json
+python scripts/verify_corpus.py --report corpus/reports/phase7c.json
 ```
 
-[Phase 7-B実測レポート](reports/phase7b.json)には条件別のseed、生成・再生成・チェック時間、ソース/出力SHA-256、DSL行数、容量と仕事量の上界、制限診断を保存しています。固定プロファイルは実際の生成器の宣言や範囲だけを固定し、本体と出力構造を検証します。通常の生成範囲を広げたこととは区別します。
+[Phase 7-B実測レポート](reports/phase7b.json)は上書きせず保持します。現在のコマンドは第1・第2バッチの条件別記録を[Phase 7-Cレポート](reports/phase7c.json)へ出力します。Phase 7-Bの履歴ファイルへの出力指定は拒否します。レポートにはseed、生成・再生成・チェック時間、ソース/出力SHA-256、DSL行数、容量と仕事量の上界、制限診断を保存します。固定プロファイルで値域を広げても、通常生成の範囲を広げたこととは区別します。
 
 ABC303-Eのチェッカーは、まず木であることを確認し、最終状態の葉に隣接する頂点を必須の星中心に選びます。そこから距離が3の倍数の頂点を中心候補とし、各中心の次数が2以上、各非中心の次数が2以下かつ中心にちょうど1個隣接することを確認します。これで頂点を星へ分割でき、残りの辺は異なる星の葉同士のマッチングになります。星を縮約したグラフは木なので、公式手続きの順に接続できる証明になります。生成器内部のStars/Level/Offset/P/Orderは読みません。6頂点までの全1440個のラベル付き木を、接続辺の全削除パターンを調べる別方式と照合し、分岐する接続木も受理するテストを含みます。
 
@@ -106,6 +106,38 @@ ABC303-Eのチェッカーは、まず木であることを確認し、最終状
 ```sh
 python -m unittest discover -s scripts -p 'test_*.py'
 ```
+
+## Phase 7-Cの第2バッチ
+
+固定した10問を追加し、全30問になりました。第2バッチは `supported=10 / format-only=0 / unsupported=0`、`representative=5 / restricted=5 / none=0`。全30問では `supported=30, representative=17, restricted=13` です。7-Aの予測は上書きせず、実装後の再判定を[計画書の第11節](../docs/CORPUS_EXPANSION_PLAN.md#11-phase-7-c第2バッチの実装検証結果)に追記しました。
+
+| ID / 問題 | coverage | 生成範囲・実測で残った制限 |
+| --- | --- | --- |
+| P02 [ABC117-D](atcoder/abc117/d/problem.toml) | representative | N≤100000、K/Aを0〜10^12から独立生成。重複・両端・KとAの大小逆転を含む。XORの追加は不要。 |
+| P05 [ABC423-C](atcoder/abc423/c/problem.toml) | representative | N≤200000、R=0..N、二値配列。全0・全1・交互と両端を固定検証。 |
+| P08 [ABC217-F](atcoder/abc217/f/problem.toml) | representative | 全候補組のU1順列から先頭M本。M=0とN=200,M=79800を確認。解法のペア除去可能性は要求しない。 |
+| P12 [ABC246-F](atcoder/abc246/f/problem.toml) | representative | 長さの異なる18文字列を個別宣言。文字表参照で26分岐の繰返しを避けるが、DSLは非空171行・3669バイト。他9問は12〜47行であり、記述負担は残る。 |
+| P13 [ABC303-C](atcoder/abc303/c/problem.toml) | restricted | 全ての公式規模でxをU1生成。点は一意だが同じxの複数点を生成しない。チェッカーは受理する。 |
+| P17 [ABC251-F](atcoder/abc251/f/problem.toml) | restricted | 通常N≤128、必須の木＋追加辺。N=632の完全グラフまで固定検証できたが、N=633,M=200000およびN=200000は候補列挙の容量未達。 |
+| P21 [ABC217-E](atcoder/abc217/e/problem.toml) | representative | 個数の累積配列で取り出し時の非空を保証。空へのソート、最後の要素の除去、連続ソート、Q=200000を確認。 |
+| P23 [ABC298-C](atcoder/abc298/c/problem.toml) | restricted | 通常Q≤256。履歴から既存の箱/値を参照し、Q²≤65536で総解答数を保証。固定Q=900で総解答数200000を達成。Q=200000は履歴保存の容量未達。 |
+| P27 [ABC284-D](atcoder/abc284/d/problem.toml) | restricted | 通常は素数2/3/5/7の表。独立な素因数探索と64bit素数判定で検証し、約200万の素数による大きい固定境界も測定。表に依存する通常生成の制限は残す。 |
+| P30 [ABC413-E](atcoder/abc413/e/problem.toml) | restricted | 通常T≤64、予算予約と奇数係数のアフィン順列。固定T=100000・総長300000も成功。非アフィン順列は生成しないがチェッカーは受理する。 |
+
+第2バッチは通常140条件と固定境界136条件を試行し、**270条件で有効入力と同seedのバイト一致**を確認しました。既知の容量未達6条件は、ABC251-Fの2プロファイル×2seedとABC298-Cの1プロファイル×2seedです。有効入力生成やチェッカーの成功数に含めません。既存20問の正常494条件・旧容量未達2条件と分離し、全体では有効入力764条件、既知の容量未達8条件を記録しています。
+
+新しいチェック処理・境界・資源監査は [corpus_batch2.py](../scripts/corpus_batch2.py)、正常・異常例は [test_corpus_batch2.py](../scripts/test_corpus_batch2.py) に分離しました。旧20問の生成器・メタデータ・チェッカー関数は変更していません。保存した494出力とのバイト比較と旧2件の同じ未達を再確認し、履歴の [phase7b.json](reports/phase7b.json) の内容ハッシュも不変です。
+
+P12の生成器は、開発時に [build_abc246_f.py](../scripts/build_abc246_f.py)（非空38行・物理48行）で機械的に作成しています。通常実行時は生成済みDSLだけを使い、Pythonから入力を生成する方式ではありません。再生成と一致確認は次のとおりです。
+
+```sh
+python scripts/build_abc246_f.py
+python scripts/build_abc246_f.py --check
+```
+
+P12は全長さ・昇順の全非空部分列を構成対象にでき、171行の展開を再生成できること、測定された生成時間・保存容量が小さいことから、実用性も検討したうえでrepresentativeを維持しました。18個の明示宣言自体が不要になったわけではありません。
+
+P23のチェッカーは箱ごとの多重集合と値ごとの所属箱集合を管理します。種別2は多重度、種別3は相異なる箱数を加算し、総解答整数数200000を正確に検証します。P27は最小素因数が立方根以下になる性質と、最初の12素数を基底にした決定的64bit素数判定を使います。小さい素数表への所属を有効性の判定には使いません。根拠、負例、実測時間は計画書の第11節に記載しています。
 
 ## U1を適用した生成範囲
 

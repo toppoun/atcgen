@@ -1,0 +1,13 @@
+contest = "abc284"
+problem = "d"
+url = "https://atcoder.jp/contests/abc284/tasks/abc284_d"
+status = "supported"
+coverage = "restricted"
+description = "Tと各ケースの整数N。既知の素数表から異なる添字のp,qを選び、幅1の範囲でp*p*qを保存する。"
+constraints = ["1 ≤ T ≤ 10、1 ≤ N ≤ 9*10^18。すべて整数。相異なる素数p,qでN=p^2*qと表せる。"]
+limitations = [
+    "通常は素数表2,3,5,7だけを使いN≤245。pとqの大小関係は両方可能だが、一般的な大きい素数は通常生成しない。",
+    "固定した大きい素数表の境界でも検証し、チェッカーは表への所属ではなく立方根までの素因数探索と決定的64bit素数判定を使う。",
+    "表の最大値の3乗でもi64および公式上限内となることを事前確認する。",
+]
+missing_features = ["表に依存しない大きい素数の構成と安全な積の生成。単なる乗算演算の不足ではない。"]

@@ -1,0 +1,25 @@
+generate {
+    T in 1..=10
+    Prime[4]
+    Prime[1] in 2..=2
+    Prime[2] in 3..=3
+    Prime[3] in 5..=5
+    Prime[4] in 7..=7
+    P[T]
+    Distance[T]
+    Q[T]
+    N[T]
+    for t in 1..=T {
+        P[t] in 1..=4
+        Distance[t] in 1..=3
+        Q[t] in ((P[t]+Distance[t]-1)%4+1)..=((P[t]+Distance[t]-1)%4+1)
+        N[t] in (Prime[P[t]]*Prime[P[t]]*Prime[Q[t]])..=(Prime[P[t]]*Prime[P[t]]*Prime[Q[t]])
+    }
+}
+
+input {
+    T
+    for t in 1..=T {
+        N[t]
+    }
+}

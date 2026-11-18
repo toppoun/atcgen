@@ -1,0 +1,48 @@
+generate {
+    T in 1..=64
+    Pow[20]
+    Pow[1] in 1..=1
+    for i in 2..=20 {
+        Pow[i] in (2*Pow[i-1])..=(2*Pow[i-1])
+    }
+    N[T]
+    Length[T]
+    Cap[T]
+    Budget[T+1]
+    OddIndex[T]
+    Shift[T]
+    Budget[1] in 300000..=300000
+    for t in 1..=T {
+        for e in 1..=18 {
+            if Pow[e+1] <= Budget[t]-2*(T-t) {
+                if Pow[e+2] > Budget[t]-2*(T-t) {
+                    Cap[t] in e..=e
+                }
+            }
+        }
+        N[t] in 1..=Cap[t]
+        Length[t] in Pow[N[t]+1]..=Pow[N[t]+1]
+        Budget[t+1] in (Budget[t]-Length[t])..=(Budget[t]-Length[t])
+        OddIndex[t] in 1..=(Length[t]/2)
+        Shift[t] in 0..=(Length[t]-1)
+    }
+    Total in (300000-Budget[T+1])..=(300000-Budget[T+1])
+    P[Total]
+    for t in 1..=T {
+        for j in 1..=Length[t] {
+            P[300000-Budget[t]+j] in (((2*OddIndex[t]-1)*(j-1)+Shift[t])%Length[t]+1)..=(((2*OddIndex[t]-1)*(j-1)+Shift[t])%Length[t]+1)
+        }
+    }
+}
+
+input {
+    T
+    for t in 1..=T {
+        N[t]
+        row {
+            for j in 1..=Length[t] {
+                P[300000-Budget[t]+j]
+            }
+        }
+    }
+}

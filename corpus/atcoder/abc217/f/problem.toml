@@ -1,0 +1,12 @@
+contest = "abc217"
+problem = "f"
+url = "https://atcoder.jp/contests/abc217/tasks/abc217_f"
+status = "supported"
+coverage = "representative"
+description = "N MとM行の組。2N頂点の全候補組を列挙し、候補番号のU1順列の先頭M本を出力する。"
+constraints = [
+    "1 ≤ N ≤ 200、0 ≤ M ≤ N(2N-1)。すべて整数。",
+    "1 ≤ A_i < B_i ≤ 2N、組はすべて異なる。全員をペアにして除去できる保証はない。",
+]
+limitations = ["固定N,Mの候補順列による標本と、入力全体の一様性・有限seedでの到達は区別する。M=0でも候補配列は正の長さ。"]
+missing_features = []

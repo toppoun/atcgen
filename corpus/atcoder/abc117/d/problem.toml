@@ -1,0 +1,9 @@
+contest = "abc117"
+problem = "d"
+url = "https://atcoder.jp/contests/abc117/tasks/abc117_d"
+status = "supported"
+coverage = "representative"
+description = "N Kと長さNの配列A。Kと各A_iを独立生成し、XORの計算は行わない。"
+constraints = ["1 ≤ N ≤ 100000、0 ≤ K,A_i ≤ 10^12。すべて整数。重複を許し、KとA_i間の大小関係はない。"]
+limitations = []
+missing_features = []

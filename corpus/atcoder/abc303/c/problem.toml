@@ -1,0 +1,12 @@
+contest = "abc303"
+problem = "c"
+url = "https://atcoder.jp/contests/abc303/tasks/abc303_c"
+status = "supported"
+coverage = "restricted"
+description = "N M H K、移動文字列S、M個の座標。xをU1で相異なるように選び、yを独立生成する。"
+constraints = [
+    "1 ≤ N,M,H,K ≤ 200000。Sは長さNのR/L/U/D列。その他は整数。",
+    "-200000 ≤ x_i,y_i ≤ 200000、点の組は相異なる。移動を完了できる保証はない。",
+]
+limitations = ["公式の全規模を使うがx座標を相異なるようにするため、同じxで異なるyを持つ点集合は生成しない。チェッカーはそのような有効入力も受理する。"]
+missing_features = ["広い座標符号の範囲での疎な重複なし抽選、または組を対象とする一意性。"]

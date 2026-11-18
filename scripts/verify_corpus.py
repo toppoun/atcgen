@@ -17,6 +17,8 @@ import tempfile
 from time import perf_counter
 import tomllib
 
+import corpus_batch2 as batch2
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "corpus" / "atcoder"
@@ -419,6 +421,7 @@ CHECKERS: dict[tuple[str, str], Callable[[Input], None]] = {
     ("abc420", "e"): check_abc420_e,
     ("abc482", "g"): check_abc482_g,
 }
+CHECKERS.update(batch2.CHECKERS)
 
 
 def read_metadata(path: Path) -> tuple[str, str]:
@@ -951,6 +954,8 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
         raise ValueError("missing constraint checker")
     if problem in BATCH1:
         return verify_batch1_problem(binary, path)
+    if problem in batch2.BATCH2:
+        return batch2.verify_problem(binary, path, generate, Input, SEEDS)
 
     outputs = set()
     boundaries = BOUNDARY_SEEDS.get(problem, {})
@@ -1006,9 +1011,13 @@ def batch1_summary(result: dict) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--report", type=Path, help="write batch 1 conditions, timings, and resource bounds as JSON")
+    parser.add_argument("--report", type=Path, help="write batch conditions, timings, and resource bounds as JSON")
     args = parser.parse_args(argv)
+    if args.report is not None:
+        require(args.report.resolve() != (ROOT / "corpus/reports/phase7b.json").resolve(),
+                "phase7b.json is a preserved historical report; choose another report path")
     BATCH1_RESULTS.clear()
+    batch2.RESULTS.clear()
     paths = sorted(CORPUS.rglob("problem.toml"))
     if not paths:
         print(f"FAIL: no problem.toml files under {CORPUS}")
@@ -1061,8 +1070,9 @@ def main(argv: list[str] | None = None) -> int:
                 "abc300/a": ", 8 fixed profiles x 2 seeds, 14 fixed-header diversity seeds",
                 "abc385/e": ", 3 fixed sizes x 2 seeds (including N=300000)",
             }.get(label, "")
-            if label in BATCH1_RESULTS:
-                result = BATCH1_RESULTS[label]
+            measured = {**BATCH1_RESULTS, **batch2.RESULTS}
+            if label in measured:
+                result = measured[label]
                 result.update(status=status, coverage=coverage)
                 summary = batch1_summary(result)
                 result["summary"] = summary
@@ -1083,7 +1093,7 @@ def main(argv: list[str] | None = None) -> int:
         report = {"report_version": 1, "environment": {"python": platform.python_version(),
                   "platform": platform.platform(), "binary_profile": "debug", "timeout_seconds": 30},
                   "registered": len(paths), "verified": verified, "failures": len(failures),
-                  "statuses": dict(statuses), "batch1": BATCH1_RESULTS}
+                  "statuses": dict(statuses), "batch1": BATCH1_RESULTS, "batch2": batch2.RESULTS}
         args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return int(bool(failures))
 

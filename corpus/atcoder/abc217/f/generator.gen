@@ -1,0 +1,22 @@
+generate {
+    N in 1..=200
+    Candidates in (N*(2*N-1))..=(N*(2*N-1))
+    M in 0..=Candidates
+    A[Candidates]
+    B[Candidates]
+    Order[Candidates]
+    for v in 2..=2*N {
+        for u in 1..v {
+            A[(v-1)*(v-2)/2+u] in u..=u
+            B[(v-1)*(v-2)/2+u] in v..=v
+        }
+    }
+    Order in unique(1..=Candidates)
+}
+
+input {
+    N M
+    for i in 1..=M {
+        A[Order[i]] B[Order[i]]
+    }
+}

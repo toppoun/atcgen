@@ -1,0 +1,9 @@
+contest = "abc423"
+problem = "c"
+url = "https://atcoder.jp/contests/abc423/tasks/abc423_c"
+status = "supported"
+coverage = "representative"
+description = "N Rと長さNの二値配列L。Rの範囲だけをNに依存させ、移動や開閉はシミュレーションしない。"
+constraints = ["2 ≤ N ≤ 200000、0 ≤ R ≤ N、L_iは0または1。すべて整数。"]
+limitations = []
+missing_features = []

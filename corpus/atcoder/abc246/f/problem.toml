@@ -1,0 +1,16 @@
+contest = "abc246"
+problem = "f"
+url = "https://atcoder.jp/contests/abc246/tasks/abc246_f"
+status = "supported"
+coverage = "representative"
+description = "N LとN個の英字列。18個の個別stringを宣言し、増加する整数添字からAlphabet文字表を参照して各文字をコピーする。"
+constraints = [
+    "1 ≤ N ≤ 18、1 ≤ L ≤ 10^9。N,Lは整数。",
+    "各S_iはabcdefghijklmnopqrstuvwxyzの空でない部分列。長さ1..26、文字は相異なり昇順。文字列同士の重複は許される。",
+]
+limitations = [
+    "18個の個別宣言・初期化ループ・出力分岐を明示展開する。使わない文字列も初期化する。文字表26セルを含む最大文字容量は494。",
+    "scripts/build_abc246_f.pyで再生成可能。非空行数と実行時間をphase7c.jsonに記録し、記述量の負担を隠さない。",
+    "既存の文字セル参照を使うため整数から文字への型変換や新しい構文は不要。部分列の分布は一様ではない。",
+]
+missing_features = ["固定個数の異長文字列の明示展開を短くする記述上の補助。今回の入力集合を広げる必須機能とは区別。"]

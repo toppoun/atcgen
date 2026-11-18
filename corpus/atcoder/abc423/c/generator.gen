@@ -1,0 +1,13 @@
+generate {
+    N in 2..=200000
+    R in 0..=N
+    L[N]
+    for i in 1..=N {
+        L[i] in 0..=1
+    }
+}
+
+input {
+    N R
+    L
+}

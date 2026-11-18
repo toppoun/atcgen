@@ -1,0 +1,48 @@
+generate {
+    N in 1..=200000
+    Q in 1..=256
+    Kind[Q]
+    Card[Q]
+    Box[Q]
+    InsertPos[Q]
+    Count[Q+1]
+    Choice[Q]
+    Count[1] in 0..=0
+    for i in 1..=Q {
+        if i == 1 {
+            Kind[i] in 1..=1
+        } else {
+            Kind[i] in 1..=3
+        }
+        if Kind[i] == 1 {
+            Card[i] in 1..=200000
+            Box[i] in 1..=N
+            Count[i+1] in (Count[i]+1)..=(Count[i]+1)
+            InsertPos[Count[i]+1] in i..=i
+        } else {
+            Choice[i] in 1..=Count[i]
+            Count[i+1] in Count[i]..=Count[i]
+            if Kind[i] == 2 {
+                Box[i] in Box[InsertPos[Choice[i]]]..=Box[InsertPos[Choice[i]]]
+            } else {
+                Card[i] in Card[InsertPos[Choice[i]]]..=Card[InsertPos[Choice[i]]]
+            }
+        }
+    }
+}
+
+input {
+    N
+    Q
+    for i in 1..=Q {
+        if Kind[i] == 1 {
+            Kind[i] Card[i] Box[i]
+        } else {
+            if Kind[i] == 2 {
+                Kind[i] Box[i]
+            } else {
+                Kind[i] Card[i]
+            }
+        }
+    }
+}

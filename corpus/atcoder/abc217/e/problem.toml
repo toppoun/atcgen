@@ -1,0 +1,9 @@
+contest = "abc217"
+problem = "e"
+url = "https://atcoder.jp/contests/abc217/tasks/abc217_e"
+status = "supported"
+coverage = "representative"
+description = "Qと1 x / 2 / 3の操作列。累積Sizeで個数を管理し、空なら種類1または3だけを生成する。"
+constraints = ["1 ≤ Q ≤ 200000、0 ≤ x ≤ 10^9。すべて整数。種別2の時点で列は非空。種別3は空状態でも有効。"]
+limitations = ["各時点の合法種別から抽選するため列全体の一様分布は主張しない。ソート内容は入力の有効性に関係せず生成時に保持しない。"]
+missing_features = []

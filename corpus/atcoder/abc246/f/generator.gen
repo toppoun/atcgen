@@ -1,0 +1,172 @@
+generate {
+    N in 1..=18
+    L in 1..=1000000000
+    Length[18]
+    Index[18*27]
+    Alphabet : string[26]
+    Alphabet[1] = 'a'
+    Alphabet[2] = 'b'
+    Alphabet[3] = 'c'
+    Alphabet[4] = 'd'
+    Alphabet[5] = 'e'
+    Alphabet[6] = 'f'
+    Alphabet[7] = 'g'
+    Alphabet[8] = 'h'
+    Alphabet[9] = 'i'
+    Alphabet[10] = 'j'
+    Alphabet[11] = 'k'
+    Alphabet[12] = 'l'
+    Alphabet[13] = 'm'
+    Alphabet[14] = 'n'
+    Alphabet[15] = 'o'
+    Alphabet[16] = 'p'
+    Alphabet[17] = 'q'
+    Alphabet[18] = 'r'
+    Alphabet[19] = 's'
+    Alphabet[20] = 't'
+    Alphabet[21] = 'u'
+    Alphabet[22] = 'v'
+    Alphabet[23] = 'w'
+    Alphabet[24] = 'x'
+    Alphabet[25] = 'y'
+    Alphabet[26] = 'z'
+    for t in 1..=18 {
+        Length[t] in 1..=26
+        Index[(t-1)*27+1] in 0..=0
+        for j in 1..=Length[t] {
+            Index[(t-1)*27+j+1] in (Index[(t-1)*27+j]+1)..=(26-Length[t]+j)
+        }
+    }
+    S1 : string[Length[1]]
+    S2 : string[Length[2]]
+    S3 : string[Length[3]]
+    S4 : string[Length[4]]
+    S5 : string[Length[5]]
+    S6 : string[Length[6]]
+    S7 : string[Length[7]]
+    S8 : string[Length[8]]
+    S9 : string[Length[9]]
+    S10 : string[Length[10]]
+    S11 : string[Length[11]]
+    S12 : string[Length[12]]
+    S13 : string[Length[13]]
+    S14 : string[Length[14]]
+    S15 : string[Length[15]]
+    S16 : string[Length[16]]
+    S17 : string[Length[17]]
+    S18 : string[Length[18]]
+    for j in 1..=Length[1] {
+        S1[j] = Alphabet[Index[0+j+1]]
+    }
+    for j in 1..=Length[2] {
+        S2[j] = Alphabet[Index[27+j+1]]
+    }
+    for j in 1..=Length[3] {
+        S3[j] = Alphabet[Index[54+j+1]]
+    }
+    for j in 1..=Length[4] {
+        S4[j] = Alphabet[Index[81+j+1]]
+    }
+    for j in 1..=Length[5] {
+        S5[j] = Alphabet[Index[108+j+1]]
+    }
+    for j in 1..=Length[6] {
+        S6[j] = Alphabet[Index[135+j+1]]
+    }
+    for j in 1..=Length[7] {
+        S7[j] = Alphabet[Index[162+j+1]]
+    }
+    for j in 1..=Length[8] {
+        S8[j] = Alphabet[Index[189+j+1]]
+    }
+    for j in 1..=Length[9] {
+        S9[j] = Alphabet[Index[216+j+1]]
+    }
+    for j in 1..=Length[10] {
+        S10[j] = Alphabet[Index[243+j+1]]
+    }
+    for j in 1..=Length[11] {
+        S11[j] = Alphabet[Index[270+j+1]]
+    }
+    for j in 1..=Length[12] {
+        S12[j] = Alphabet[Index[297+j+1]]
+    }
+    for j in 1..=Length[13] {
+        S13[j] = Alphabet[Index[324+j+1]]
+    }
+    for j in 1..=Length[14] {
+        S14[j] = Alphabet[Index[351+j+1]]
+    }
+    for j in 1..=Length[15] {
+        S15[j] = Alphabet[Index[378+j+1]]
+    }
+    for j in 1..=Length[16] {
+        S16[j] = Alphabet[Index[405+j+1]]
+    }
+    for j in 1..=Length[17] {
+        S17[j] = Alphabet[Index[432+j+1]]
+    }
+    for j in 1..=Length[18] {
+        S18[j] = Alphabet[Index[459+j+1]]
+    }
+}
+
+input {
+    N L
+    for t in 1..=N {
+        if t == 1 {
+            S1
+        }
+        if t == 2 {
+            S2
+        }
+        if t == 3 {
+            S3
+        }
+        if t == 4 {
+            S4
+        }
+        if t == 5 {
+            S5
+        }
+        if t == 6 {
+            S6
+        }
+        if t == 7 {
+            S7
+        }
+        if t == 8 {
+            S8
+        }
+        if t == 9 {
+            S9
+        }
+        if t == 10 {
+            S10
+        }
+        if t == 11 {
+            S11
+        }
+        if t == 12 {
+            S12
+        }
+        if t == 13 {
+            S13
+        }
+        if t == 14 {
+            S14
+        }
+        if t == 15 {
+            S15
+        }
+        if t == 16 {
+            S16
+        }
+        if t == 17 {
+            S17
+        }
+        if t == 18 {
+            S18
+        }
+    }
+}
