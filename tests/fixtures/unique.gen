@@ -1,0 +1,12 @@
+generate {
+    N in 3..=3
+    A[N]
+    B[N]
+    A in unique(1..=10)
+    B in unique(1..=10) except(A)
+}
+input {
+    N
+    A
+    B
+}

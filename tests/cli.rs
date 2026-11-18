@@ -18,6 +18,90 @@ fn cli_expands_whole_arrays() {
 }
 
 #[test]
+fn cli_unique_samples_arrays_and_preserves_seed_reproducibility() {
+    let path = source("tests/fixtures/unique.gen");
+    let output = run(&path);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    // Golden result computed independently from the documented SplitMix64 and
+    // forward partial Fisher–Yates rules, including N's singleton draw.
+    assert_eq!(output.stdout, b"3\n2 1 7\n10 4 5\n");
+    assert_eq!(output.stdout, run(&path).stdout);
+    let numbers: Vec<i64> = String::from_utf8(output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .map(|word| word.parse().unwrap())
+        .collect();
+    assert_eq!(numbers[0], 3);
+    assert_eq!(numbers.len(), 7);
+    assert_eq!(
+        numbers[1..]
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        6
+    );
+    assert!(numbers[1..].iter().all(|number| (1..=10).contains(number)));
+}
+
+#[test]
+fn cli_unique_failure_after_successful_sampling_leaves_stdout_empty() {
+    assert_error(
+        "unique-generation-error.gen",
+        "6:10: insufficient unique candidates",
+    );
+}
+
+#[test]
+fn cli_unique_parse_static_and_late_output_failures_leave_stdout_empty() {
+    for (index, (body, input, expected)) in [
+        (
+            "A[1]\nif 0 == 1 {\nA in unique(1..=2)\n}",
+            "",
+            "generate control block",
+        ),
+        (
+            "A[1]\nS : string[1]\nA in unique(1..=2) except(S[1])",
+            "",
+            "type mismatch",
+        ),
+        (
+            "A[2]\nA in unique(1..=9)\nB[1]\nB in unique(1..=1000001)",
+            "",
+            "candidate width limit",
+        ),
+        (
+            "A[2]\nA in unique(1..=9)\nB[1]",
+            "A\nB",
+            "B[1]` is uninitialized",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = std::env::temp_dir().join(format!(
+            "atcgen-unique-cli-{}-{index}.gen",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            format!("generate {{\n{body}\n}}\ninput {{\n{input}\n}}\n"),
+        )
+        .unwrap();
+        let output = run(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            diagnostic.starts_with(&format!("{}:", path.display())),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+    }
+}
+
+#[test]
 fn cli_leaves_stdout_empty_when_generation_fails_after_a_value() {
     assert_error("empty-range.gen", "3:13: invalid range `N..N`");
 }

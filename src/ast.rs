@@ -20,6 +20,7 @@ pub(crate) enum GenerateStmt<'a> {
         length: Expr<'a>,
     },
     InitElement(ElementInit<'a>),
+    InitUnique(UniqueInit<'a>),
     If {
         position: Position,
         condition: Condition<'a>,
@@ -32,6 +33,13 @@ pub(crate) enum GenerateStmt<'a> {
         range: RangeExpr<'a>,
         body: Vec<GenerateStmt<'a>>,
     },
+}
+
+pub(crate) struct UniqueInit<'a> {
+    pub target: Name<'a>,
+    pub position: Position,
+    pub range: RangeExpr<'a>,
+    pub exclusions: Vec<Expr<'a>>,
 }
 
 pub(crate) struct ElementInit<'a> {

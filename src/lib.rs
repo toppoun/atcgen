@@ -21,3 +21,6 @@ mod tests;
 
 #[cfg(test)]
 mod string_tests;
+
+#[cfg(test)]
+mod unique_tests;

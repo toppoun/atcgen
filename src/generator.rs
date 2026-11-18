@@ -2,8 +2,8 @@ use crate::Error;
 use crate::ast::{BinaryOp, ComparisonOp, ExprNode, Located, Name, RangeEnd, UnaryOp};
 use crate::error::Position;
 use crate::validation::{
-    ArrayRef, BoundCondition, BoundElement, BoundElementInit, BoundExpr, BoundGenerateStmt,
-    BoundInitValue, BoundNode, BoundRange, ScalarRef,
+    ArrayRef, BoundCondition, BoundElement, BoundElementInit, BoundExclusion, BoundExpr,
+    BoundGenerateStmt, BoundInitValue, BoundNode, BoundRange, BoundUniqueInit, ScalarRef,
 };
 
 const MAX_ARRAY_ELEMENTS: usize = 1_000_000;
@@ -11,6 +11,9 @@ const MAX_CHAR_CELLS: usize = 1_000_000;
 const MAX_GENERATED_INTEGERS: usize = 1_000_000;
 const MAX_LOOP_ITERATIONS: i128 = 1_000_000;
 const MAX_EXECUTION_WORK: usize = 10_000_000;
+const MAX_UNIQUE_WIDTH: usize = 1_000_000;
+const MAX_UNIQUE_EXCLUSIONS: usize = 1_000_000;
+const MAX_UNIQUE_PAYLOAD_BYTES: usize = 16_000_000;
 
 pub(crate) struct WorkBudget(Option<usize>);
 
@@ -66,7 +69,7 @@ pub(crate) fn generate(
         char_cells: 0,
     };
     let limited = statements.iter().any(|statement| match statement {
-        BoundGenerateStmt::If { .. } => true,
+        BoundGenerateStmt::If { .. } | BoundGenerateStmt::InitUnique(_) => true,
         BoundGenerateStmt::For { body, .. } => body.iter().any(|item| {
             matches!(
                 item,
@@ -87,7 +90,11 @@ impl Generator {
         work: &mut WorkBudget,
     ) -> Result<(), Error> {
         for statement in statements {
-            work.charge(1, statement.position())?;
+            // Unique initialization charges its header together with internal
+            // work, after checking the target, range, exclusions and candidates.
+            if !matches!(statement, BoundGenerateStmt::InitUnique(_)) {
+                work.charge(1, statement.position())?;
+            }
             match statement {
                 BoundGenerateStmt::Scalar { name, range } => {
                     let (lower, width) = self.evaluation(loop_values).nonempty_range(range)?;
@@ -99,6 +106,7 @@ impl Generator {
                     self.declare_string(count.as_ref(), length)?
                 }
                 BoundGenerateStmt::InitElement(init) => self.init_element(init, loop_values)?,
+                BoundGenerateStmt::InitUnique(init) => self.init_unique(init, work)?,
                 BoundGenerateStmt::If {
                     condition,
                     then_body,
@@ -202,6 +210,120 @@ impl Generator {
         Ok(())
     }
 
+    fn init_unique(
+        &mut self,
+        init: &BoundUniqueInit<'_>,
+        work: &mut WorkBudget,
+    ) -> Result<(), Error> {
+        let evaluation = self.evaluation(&[]);
+        let target = evaluation.array(init.target);
+        if let Some(offset) = target.iter().position(Option::is_some) {
+            return Err(Error::at(
+                init.target.name.position,
+                format!(
+                    "array element `{}[{}]` is already initialized",
+                    init.target.name.value,
+                    offset + 1
+                ),
+            ));
+        }
+        let count = target.len();
+        let (lower, width) = evaluation.nonempty_range(&init.range)?;
+        let width = usize::try_from(width)
+            .ok()
+            .filter(|&width| width <= MAX_UNIQUE_WIDTH)
+            .ok_or_else(|| {
+                Error::at(
+                    init.range.lower.position,
+                    format!("unique candidate width limit exceeded ({MAX_UNIQUE_WIDTH})"),
+                )
+            })?;
+
+        // Lengths alone allow a single fallible allocation. Do not evaluate any
+        // exclusion values, or report a later read-limit failure, out of order.
+        let exclusion_capacity = init.exclusions.iter().fold(0usize, |capacity, exclusion| {
+            let length = match exclusion {
+                BoundExclusion::Integer(_) => 1,
+                BoundExclusion::Array(array) => evaluation.array(*array).len(),
+            };
+            capacity.saturating_add(length).min(MAX_UNIQUE_EXCLUSIONS)
+        });
+        let mut excluded = unique_buffer(exclusion_capacity, init.position)?;
+        for exclusion in &init.exclusions {
+            let position = exclusion.position();
+            match exclusion {
+                BoundExclusion::Integer(expr) => {
+                    check_unique_exclusion_count(excluded.len(), position)?;
+                    excluded.push(evaluation.evaluate(expr)?);
+                }
+                BoundExclusion::Array(array) => {
+                    for (offset, &value) in evaluation.array(*array).iter().enumerate() {
+                        check_unique_exclusion_count(excluded.len(), position)?;
+                        excluded.push(initialized_element(*array, offset, value)?);
+                    }
+                }
+            }
+        }
+        let exclusion_count = excluded.len();
+        excluded.sort_unstable();
+        excluded.dedup();
+        let end = i128::from(lower) + width as i128;
+        excluded.retain(|&value| value >= lower && i128::from(value) < end);
+        let available = width - excluded.len();
+        if count > available {
+            return Err(Error::at(
+                init.position,
+                format!(
+                    "insufficient unique candidates: need {count}, range width {width}, \
+                     distinct in-range exclusions {}, available {available}",
+                    excluded.len()
+                ),
+            ));
+        }
+        check_unique_payload(width, exclusion_count, init.position)?;
+        if count > MAX_GENERATED_INTEGERS - self.generated_integers {
+            return Err(Error::at(
+                init.target.name.position,
+                format!("generated integer limit exceeded ({MAX_GENERATED_INTEGERS})"),
+            ));
+        }
+        work.charge(
+            unique_work(count, width, exclusion_count, init.position)?,
+            init.target.name.position,
+        )?;
+        let mut candidates = unique_buffer(available, init.position)?;
+        let mut exclusions = excluded.iter().peekable();
+        for offset in 0..width {
+            // Widen before adding, including when the range ends at i64::MAX.
+            let value = i64::try_from(i128::from(lower) + offset as i128)
+                .expect("candidate is inside the validated i64 range");
+            if exclusions.peek().is_some_and(|&&next| next == value) {
+                exclusions.next();
+            } else {
+                candidates.push(value);
+            }
+        }
+
+        // All fallible checks and allocations are complete. The ascending
+        // candidate list and these forward swaps define the seed contract.
+        for index in 0..count {
+            let selected = self
+                .rng
+                .sample((index + 1) as i64, (available - index) as i128)
+                as usize
+                - 1;
+            candidates.swap(index, selected);
+        }
+        let Value::Array(target) = &mut self.values[init.target.slot] else {
+            unreachable!("unique initialization is bound to an integer array");
+        };
+        for (cell, value) in target.iter_mut().zip(candidates) {
+            *cell = Some(value);
+        }
+        self.generated_integers += count;
+        Ok(())
+    }
+
     fn declare_string(
         &mut self,
         count: Option<&BoundExpr<'_>>,
@@ -275,6 +397,57 @@ impl Generator {
         self.generated_integers += 1;
         Ok(self.rng.sample(lower, width))
     }
+}
+
+fn check_unique_exclusion_count(count: usize, position: Position) -> Result<(), Error> {
+    if count >= MAX_UNIQUE_EXCLUSIONS {
+        return Err(Error::at(
+            position,
+            format!("unique exclusion read limit exceeded ({MAX_UNIQUE_EXCLUSIONS})"),
+        ));
+    }
+    Ok(())
+}
+
+fn check_unique_payload(width: usize, exclusions: usize, position: Position) -> Result<(), Error> {
+    let bytes = width
+        .checked_add(exclusions)
+        .and_then(|elements| elements.checked_mul(size_of::<i64>()));
+    if !bytes.is_some_and(|bytes| bytes <= MAX_UNIQUE_PAYLOAD_BYTES) {
+        return Err(Error::at(
+            position,
+            format!("unique workspace payload limit exceeded ({MAX_UNIQUE_PAYLOAD_BYTES} bytes)"),
+        ));
+    }
+    Ok(())
+}
+
+fn unique_work(
+    count: usize,
+    width: usize,
+    exclusions: usize,
+    position: Position,
+) -> Result<usize, Error> {
+    // ceil(log2(e + 1)) = bit_length(e), including e = 0.
+    let logarithm = usize::BITS - exclusions.leading_zeros();
+    let units = 1 + count as u128 + width as u128 + exclusions as u128 * u128::from(logarithm);
+    usize::try_from(units).map_err(|_| {
+        Error::at(
+            position,
+            format!("execution work limit exceeded ({MAX_EXECUTION_WORK})"),
+        )
+    })
+}
+
+fn unique_buffer(capacity: usize, position: Position) -> Result<Vec<i64>, Error> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|error| {
+        Error::at(
+            position,
+            format!("unable to allocate unique sampling workspace: {error}"),
+        )
+    })?;
+    Ok(values)
 }
 
 pub(crate) struct Evaluation<'values, 'loops> {
@@ -611,5 +784,135 @@ impl SplitMix64 {
             self.next()
         };
         i64::try_from(i128::from(lower) + i128::from(offset)).expect("sample is in the i64 range")
+    }
+}
+
+#[cfg(test)]
+mod unique_internal_tests {
+    use super::*;
+    use crate::{parser, validation};
+
+    const POSITION: Position = Position { line: 3, column: 6 };
+
+    #[test]
+    fn unique_workspace_payload_boundaries_and_overflow_are_checked() {
+        check_unique_payload(999_999, 1_000_000, POSITION).unwrap();
+        check_unique_payload(1_000_000, 1_000_000, POSITION).unwrap();
+        // The independent W/e limits make a payload overflow unreachable from
+        // valid DSL. Exercise the defensive check directly, including overflow.
+        for (width, exclusions) in [(1_000_001, 1_000_000), (usize::MAX, 1), (usize::MAX, 0)] {
+            let error = check_unique_payload(width, exclusions, POSITION).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("3:6: unique workspace payload limit exceeded")
+            );
+        }
+        assert!(
+            unique_buffer(usize::MAX, POSITION)
+                .unwrap_err()
+                .to_string()
+                .contains("unable to allocate unique sampling workspace")
+        );
+    }
+
+    #[test]
+    fn unique_work_formula_uses_raw_reads_and_does_not_overflow() {
+        for (reads, term) in [
+            (0, 0),
+            (1, 1),
+            (2, 4),
+            (3, 6),
+            (4, 12),
+            (1_000_000, 20_000_000),
+        ] {
+            assert_eq!(unique_work(5, 10, reads, POSITION).unwrap(), 16 + term);
+        }
+        assert!(unique_work(usize::MAX, usize::MAX, usize::MAX, POSITION).is_err());
+        check_unique_exclusion_count(999_999, POSITION).unwrap();
+        assert!(check_unique_exclusion_count(1_000_000, POSITION).is_err());
+    }
+
+    #[test]
+    fn unique_preflight_failures_leave_rng_target_and_integer_count_unchanged() {
+        for (body, expected, exhausted_integers, work_left) in [
+            (
+                "A[2]\nA[2] in 7..=7\nA in unique(1/0..=9)",
+                "already initialized",
+                false,
+                0,
+            ),
+            ("A[2]\nA in unique(1/0..=9)", "division by zero", false, 0),
+            ("A[2]\nA in unique(1..1)", "invalid range", false, 0),
+            (
+                "A[2]\nA in unique(1..=1000001)",
+                "candidate width limit",
+                false,
+                0,
+            ),
+            (
+                "A[2]\nE[1]\nA in unique(1..=9) except(E)",
+                "uninitialized",
+                false,
+                0,
+            ),
+            (
+                "A[2]\nA in unique(1..=9) except(1/0)",
+                "division by zero",
+                false,
+                0,
+            ),
+            (
+                "A[2]\nA in unique(1..=2) except(1,1)",
+                "insufficient unique candidates",
+                false,
+                0,
+            ),
+            (
+                "A[2]\nA in unique(1..=2)",
+                "generated integer limit",
+                true,
+                0,
+            ),
+            ("A[2]\nA in unique(1..=2)", "execution work limit", false, 4),
+        ] {
+            let source = format!("generate {{\n{body}\n}}\ninput {{\n}}\n");
+            let program = validation::validate(parser::parse(&source).unwrap()).unwrap();
+            let (last, prefix) = program.generate.split_last().unwrap();
+            let BoundGenerateStmt::InitUnique(init) = last else {
+                panic!("expected unique")
+            };
+            let mut generator = Generator {
+                rng: SplitMix64 { state: 42 },
+                values: Vec::new(),
+                array_elements: 0,
+                generated_integers: 0,
+                char_cells: 0,
+            };
+            generator
+                .execute(prefix, &mut Vec::new(), &mut WorkBudget::new(true))
+                .unwrap();
+            if exhausted_integers {
+                generator.generated_integers = MAX_GENERATED_INTEGERS;
+            }
+            let before_state = generator.rng.state;
+            let before_count = generator.generated_integers;
+            let before_target = generator.evaluation(&[]).array(init.target).to_vec();
+            let error = generator
+                .execute(
+                    std::slice::from_ref(last),
+                    &mut Vec::new(),
+                    &mut WorkBudget(Some(work_left)),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{body}: {error}");
+            assert_eq!(generator.rng.state, before_state, "{body}");
+            assert_eq!(generator.generated_integers, before_count, "{body}");
+            assert_eq!(
+                generator.evaluation(&[]).array(init.target),
+                before_target,
+                "{body}"
+            );
+        }
     }
 }

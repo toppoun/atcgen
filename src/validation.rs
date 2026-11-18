@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::Error;
 use crate::ast::{
     ComparisonOp, Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InitValue,
-    InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeExpr,
+    InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeExpr, UniqueInit,
 };
 use crate::error::Position;
 
@@ -28,6 +28,7 @@ pub(crate) enum BoundGenerateStmt<'a> {
         length: BoundExpr<'a>,
     },
     InitElement(BoundElementInit<'a>),
+    InitUnique(BoundUniqueInit<'a>),
     If {
         position: Position,
         condition: BoundCondition<'a>,
@@ -48,7 +49,29 @@ impl BoundGenerateStmt<'_> {
                 name.position
             }
             Self::InitElement(init) => init.target.array.name.position,
+            Self::InitUnique(init) => init.target.name.position,
             Self::For { position, .. } | Self::If { position, .. } => *position,
+        }
+    }
+}
+
+pub(crate) struct BoundUniqueInit<'a> {
+    pub target: ArrayRef<'a>,
+    pub position: Position,
+    pub range: BoundRange<'a>,
+    pub exclusions: Vec<BoundExclusion<'a>>,
+}
+
+pub(crate) enum BoundExclusion<'a> {
+    Integer(BoundExpr<'a>),
+    Array(ArrayRef<'a>),
+}
+
+impl BoundExclusion<'_> {
+    pub(crate) fn position(&self) -> Position {
+        match self {
+            Self::Integer(expr) => expr.position,
+            Self::Array(array) => array.name.position,
         }
     }
 }
@@ -211,7 +234,7 @@ impl<'a> Names<'a> {
                         self.register_generate(body)?;
                     }
                 }
-                GenerateStmt::InitElement(_) => {}
+                GenerateStmt::InitElement(_) | GenerateStmt::InitUnique(_) => {}
             }
         }
         Ok(())
@@ -316,6 +339,9 @@ impl<'a> Resolver<'_, 'a> {
                 }
             }
             GenerateStmt::InitElement(init) => BoundGenerateStmt::InitElement(self.init(init)?),
+            GenerateStmt::InitUnique(init) => {
+                BoundGenerateStmt::InitUnique(self.unique_init(init)?)
+            }
             GenerateStmt::If {
                 position,
                 condition,
@@ -498,6 +524,43 @@ impl<'a> Resolver<'_, 'a> {
         Ok(BoundElementInit { target, value })
     }
 
+    fn unique_init(&self, init: UniqueInit<'a>) -> Result<BoundUniqueInit<'a>, Error> {
+        let binding = self.global(init.target)?;
+        if !matches!(binding.kind, Kind::Array) {
+            return Err(Error::at(
+                init.target.position,
+                "unique initialization requires a declared integer array",
+            ));
+        }
+        let range = self.range(init.range)?;
+        let exclusions = init
+            .exclusions
+            .into_iter()
+            .map(|expr| {
+                reject_self_exclusion(&expr.node, init.target)?;
+                if let ExprNode::Variable(name) = &expr.node {
+                    let binding = self.global(*name)?;
+                    if matches!(binding.kind, Kind::Array) {
+                        return Ok(BoundExclusion::Array(ArrayRef {
+                            name: *name,
+                            slot: binding.slot,
+                        }));
+                    }
+                }
+                Ok(BoundExclusion::Integer(self.expr(expr)?))
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(BoundUniqueInit {
+            target: ArrayRef {
+                name: init.target,
+                slot: binding.slot,
+            },
+            position: init.position,
+            range,
+            exclusions,
+        })
+    }
+
     fn range(&self, range: RangeExpr<'a>) -> Result<BoundRange<'a>, Error> {
         Ok(BoundRange {
             lower: self.expr(range.lower)?,
@@ -666,6 +729,40 @@ impl<'a> Resolver<'_, 'a> {
             position: name.position,
         })
     }
+}
+
+// Check every nested reference, including array indices, without making whole
+// arrays legal in ordinary integer expressions.
+fn reject_self_exclusion(node: &ExprNode<'_>, target: Name<'_>) -> Result<(), Error> {
+    let check = |name: Name<'_>| {
+        if name.value == target.value {
+            Err(Error::at(
+                name.position,
+                "unique initialization cannot exclude its own target array",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    match node {
+        ExprNode::Variable(name) => check(*name)?,
+        ExprNode::Element(element) => {
+            check(element.array)?;
+            reject_self_exclusion(&element.index.node, target)?;
+            if let Some(index) = &element.second_index {
+                reject_self_exclusion(&index.node, target)?;
+            }
+        }
+        ExprNode::Unary { operand, .. } => reject_self_exclusion(operand, target)?,
+        ExprNode::Binary { first, rest } => {
+            reject_self_exclusion(first, target)?;
+            for (_, operand) in rest {
+                reject_self_exclusion(operand, target)?;
+            }
+        }
+        ExprNode::Literal(_) | ExprNode::CharLiteral(_) => {}
+    }
+    Ok(())
 }
 
 fn require_type(actual: Type, expected: Type, position: Position) -> Result<(), Error> {

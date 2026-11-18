@@ -2,7 +2,7 @@ use crate::Error;
 use crate::ast::{
     BinaryOp, ComparisonOp, Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt,
     InitValue, InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeEnd, RangeExpr,
-    UnaryOp,
+    UnaryOp, UniqueInit,
 };
 use crate::error::Position;
 
@@ -488,8 +488,38 @@ impl<'a> Line<'a> {
             self.string_declaration(name, None)?
         } else {
             self.keyword("in")?;
-            let range = self.range()?;
-            GenerateStmt::GenerateScalar { name, range }
+            if self
+                .remaining()
+                .strip_prefix("unique")
+                .is_some_and(|tail| tail.trim_start_matches([' ', '\t']).starts_with('('))
+            {
+                let position = self.position();
+                self.keyword("unique")?;
+                self.expect("(")?;
+                let range = self.range()?;
+                self.expect(")")?;
+                let mut exclusions = Vec::new();
+                if self.starts_keyword("except") {
+                    self.keyword("except")?;
+                    self.expect("(")?;
+                    loop {
+                        exclusions.push(self.expression(0)?);
+                        if !self.consume(",") {
+                            break;
+                        }
+                    }
+                    self.expect(")")?;
+                }
+                GenerateStmt::InitUnique(UniqueInit {
+                    target: name,
+                    position,
+                    range,
+                    exclusions,
+                })
+            } else {
+                let range = self.range()?;
+                GenerateStmt::GenerateScalar { name, range }
+            }
         };
         self.finish()?;
         Ok(statement)
