@@ -14,6 +14,11 @@ pub(crate) enum GenerateStmt<'a> {
         name: Name<'a>,
         length: Expr<'a>,
     },
+    DeclareString {
+        name: Name<'a>,
+        count: Option<Expr<'a>>,
+        length: Expr<'a>,
+    },
     InitElement(ElementInit<'a>),
     If {
         position: Position,
@@ -31,7 +36,13 @@ pub(crate) enum GenerateStmt<'a> {
 
 pub(crate) struct ElementInit<'a> {
     pub target: ElementRef<'a>,
-    pub range: RangeExpr<'a>,
+    pub value: InitValue<'a>,
+}
+
+pub(crate) enum InitValue<'a> {
+    Range(RangeExpr<'a>),
+    Alphabet(Located<Vec<u8>>),
+    Fixed(Expr<'a>),
 }
 
 pub(crate) enum InputStmt<'a> {
@@ -67,6 +78,7 @@ pub(crate) enum OutputRef<'a> {
 pub(crate) struct ElementRef<'a, Scalar = Name<'a>, Array = Name<'a>> {
     pub array: Array,
     pub index: Expr<'a, Scalar, Array>,
+    pub second_index: Option<Expr<'a, Scalar, Array>>,
 }
 
 pub(crate) struct RangeExpr<'a, Scalar = Name<'a>, Array = Name<'a>> {
@@ -79,6 +91,7 @@ pub(crate) struct RangeExpr<'a, Scalar = Name<'a>, Array = Name<'a>> {
 pub(crate) struct Condition<'a, Scalar = Name<'a>, Array = Name<'a>> {
     pub left: Expr<'a, Scalar, Array>,
     pub op: ComparisonOp,
+    pub op_position: Position,
     pub right: Expr<'a, Scalar, Array>,
 }
 
@@ -114,6 +127,7 @@ pub(crate) struct Expr<'a, Scalar = Name<'a>, Array = Name<'a>> {
 
 pub(crate) enum ExprNode<'a, Scalar = Name<'a>, Array = Name<'a>> {
     Literal(i64),
+    CharLiteral(u8),
     Variable(Scalar),
     Element(Box<ElementRef<'a, Scalar, Array>>),
     Unary {

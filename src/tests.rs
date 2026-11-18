@@ -823,18 +823,18 @@ fn counts_output_integers_per_reference_and_on_every_reuse() {
     assert_error(
         generation,
         &format!("{input}\n  A[1]"),
-        "10:3: output integer limit exceeded (1000000)",
+        "10:3: output token limit exceeded (1000000)",
     );
     let input = "for i in 1..=499999 {\n A\n}\n  A[2] A";
     assert_error(
         generation,
         input,
-        "10:8: output integer limit exceeded (1000000)",
+        "10:8: output token limit exceeded (1000000)",
     );
     assert_error(
         generation,
         "row {\n for i in 1..=500000 {\n  A\n }\n A[1]\n}",
-        "11:2: output integer limit exceeded (1000000)",
+        "11:2: output token limit exceeded (1000000)",
     );
 }
 
@@ -1048,7 +1048,6 @@ fn rejects_declarations_and_unsupported_conditional_syntax() {
         "1 == 1 || 2 == 2",
         "!1 == 1",
         "(1 == 1)",
-        "'a' == 'a'",
     ] {
         let block = format!("if {condition} {{\n}}");
         assert!(generate(&dsl(&block, ""), 42).is_err(), "{condition}");

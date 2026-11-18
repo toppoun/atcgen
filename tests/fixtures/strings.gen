@@ -1,0 +1,22 @@
+generate {
+    N in 2..=2
+    S : string[N]
+    S[1] = 'a'
+    S[2] = 'b'
+    G[N] : string[N]
+    G[1][1] = S[2]
+    G[1][2] = S[1]
+    G[2][1] = S[1]
+    G[2][2] = S[2]
+}
+input {
+    N S
+    for i in 1..=N {
+        G[i]
+    }
+    row {
+        S S[2]
+        G
+        N
+    }
+}

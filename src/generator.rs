@@ -3,10 +3,11 @@ use crate::ast::{BinaryOp, ComparisonOp, ExprNode, Located, Name, RangeEnd, Unar
 use crate::error::Position;
 use crate::validation::{
     ArrayRef, BoundCondition, BoundElement, BoundElementInit, BoundExpr, BoundGenerateStmt,
-    BoundNode, BoundRange, ScalarRef,
+    BoundInitValue, BoundNode, BoundRange, ScalarRef,
 };
 
 const MAX_ARRAY_ELEMENTS: usize = 1_000_000;
+const MAX_CHAR_CELLS: usize = 1_000_000;
 const MAX_GENERATED_INTEGERS: usize = 1_000_000;
 const MAX_LOOP_ITERATIONS: i128 = 1_000_000;
 const MAX_EXECUTION_WORK: usize = 10_000_000;
@@ -34,6 +35,14 @@ impl WorkBudget {
 pub(crate) enum Value {
     Scalar(i64),
     Array(Vec<Option<i64>>),
+    String(StringValue),
+    StringArray(StringValue),
+}
+
+pub(crate) struct StringValue {
+    pub width: usize,
+    // Zero cannot be a valid character, so it marks an uninitialized cell.
+    pub cells: Vec<u8>,
 }
 
 struct Generator {
@@ -41,6 +50,7 @@ struct Generator {
     values: Vec<Value>,
     array_elements: usize,
     generated_integers: usize,
+    char_cells: usize,
 }
 
 pub(crate) fn generate(
@@ -53,6 +63,7 @@ pub(crate) fn generate(
         values: Vec::with_capacity(slot_count),
         array_elements: 0,
         generated_integers: 0,
+        char_cells: 0,
     };
     let limited = statements.iter().any(|statement| match statement {
         BoundGenerateStmt::If { .. } => true,
@@ -84,6 +95,9 @@ impl Generator {
                     self.values.push(Value::Scalar(value));
                 }
                 BoundGenerateStmt::Array { length, .. } => self.declare_array(length)?,
+                BoundGenerateStmt::String { count, length, .. } => {
+                    self.declare_string(count.as_ref(), length)?
+                }
                 BoundGenerateStmt::InitElement(init) => self.init_element(init, loop_values)?,
                 BoundGenerateStmt::If {
                     condition,
@@ -113,7 +127,10 @@ impl Generator {
         Ok(())
     }
 
-    fn evaluation<'values>(&'values self, loop_values: &'values [i64]) -> Evaluation<'values> {
+    fn evaluation<'values>(
+        &'values self,
+        loop_values: &'values [i64],
+    ) -> Evaluation<'values, 'values> {
         Evaluation {
             values: &self.values,
             loop_values,
@@ -156,6 +173,9 @@ impl Generator {
         init: &BoundElementInit<'_>,
         loop_values: &[i64],
     ) -> Result<(), Error> {
+        if !matches!(init.value, BoundInitValue::Range(_)) {
+            return self.init_char(init, loop_values);
+        }
         let evaluation = self.evaluation(loop_values);
         let target = &init.target;
         let array = target.array;
@@ -170,12 +190,78 @@ impl Generator {
                 ),
             ));
         }
-        let (lower, width) = evaluation.nonempty_range(&init.range)?;
+        let BoundInitValue::Range(range) = &init.value else {
+            unreachable!()
+        };
+        let (lower, width) = evaluation.nonempty_range(range)?;
         let value = self.sample(array.name, lower, width)?;
         let Value::Array(elements) = &mut self.values[array.slot] else {
             unreachable!("initialization target is bound to an array");
         };
         elements[offset] = Some(value);
+        Ok(())
+    }
+
+    fn declare_string(
+        &mut self,
+        count: Option<&BoundExpr<'_>>,
+        length: &BoundExpr<'_>,
+    ) -> Result<(), Error> {
+        // Evaluate dimensions once, in source order, before allocating any cells.
+        let rows = count
+            .map(|expr| self.evaluation(&[]).dimension(expr))
+            .transpose()?
+            .unwrap_or(1);
+        let width = self.evaluation(&[]).dimension(length)?;
+        let cells = rows
+            .checked_mul(width)
+            .filter(|&cells| cells <= MAX_CHAR_CELLS)
+            .ok_or_else(|| {
+                Error::at(
+                    length.position,
+                    format!("string capacity limit exceeded ({MAX_CHAR_CELLS})"),
+                )
+            })?;
+        if cells > MAX_CHAR_CELLS - self.char_cells {
+            return Err(Error::at(
+                length.position,
+                format!("total character capacity limit exceeded ({MAX_CHAR_CELLS})"),
+            ));
+        }
+        self.char_cells += cells;
+        let value = StringValue {
+            width,
+            cells: vec![0; cells],
+        };
+        self.values.push(if count.is_some() {
+            Value::StringArray(value)
+        } else {
+            Value::String(value)
+        });
+        Ok(())
+    }
+
+    fn init_char(&mut self, init: &BoundElementInit<'_>, loop_values: &[i64]) -> Result<(), Error> {
+        let evaluation = self.evaluation(loop_values);
+        let target = &init.target;
+        let array = target.array;
+        let offset = evaluation.char_offset(target)?;
+        if evaluation.string(array).cells[offset] != 0 {
+            return Err(evaluation.char_state_error(array, offset, "already initialized"));
+        }
+        let value = match &init.value {
+            BoundInitValue::Alphabet(bytes) => {
+                let index = self.rng.sample(0, bytes.len() as i128) as usize;
+                bytes[index]
+            }
+            BoundInitValue::Fixed(expr) => evaluation.character(expr)?,
+            BoundInitValue::Range(_) => unreachable!(),
+        };
+        let (Value::String(string) | Value::StringArray(string)) = &mut self.values[array.slot]
+        else {
+            unreachable!("character initialization is bound to a string");
+        };
+        string.cells[offset] = value;
         Ok(())
     }
 
@@ -191,13 +277,25 @@ impl Generator {
     }
 }
 
-pub(crate) struct Evaluation<'values> {
+pub(crate) struct Evaluation<'values, 'loops> {
     pub values: &'values [Value],
-    pub loop_values: &'values [i64],
+    pub loop_values: &'loops [i64],
 }
 
-impl Evaluation<'_> {
+impl<'values> Evaluation<'values, '_> {
     pub(crate) fn condition(&self, condition: &BoundCondition<'_>) -> Result<bool, Error> {
+        let condition = match condition {
+            BoundCondition::Char(condition) => {
+                let left = self.character(&condition.left)?;
+                let right = self.character(&condition.right)?;
+                return Ok(match condition.op {
+                    ComparisonOp::Equal => left == right,
+                    ComparisonOp::NotEqual => left != right,
+                    _ => unreachable!("character comparison is statically checked"),
+                });
+            }
+            BoundCondition::Int(condition) => condition,
+        };
         let left = self.evaluate(&condition.left)?;
         let right = self.evaluate(&condition.right)?;
         Ok(match condition.op {
@@ -274,6 +372,129 @@ impl Evaluation<'_> {
         elements
     }
 
+    fn dimension(&self, expr: &BoundExpr<'_>) -> Result<usize, Error> {
+        let value = self.evaluate(expr)?;
+        if value <= 0 {
+            return Err(Error::at(
+                expr.position,
+                format!("invalid string dimension {value}; expected a positive integer"),
+            )
+            .with_expression(expr.source));
+        }
+        usize::try_from(value)
+            .ok()
+            .filter(|&value| value <= MAX_CHAR_CELLS)
+            .ok_or_else(|| {
+                Error::at(
+                    expr.position,
+                    format!("string dimension limit exceeded ({MAX_CHAR_CELLS})"),
+                )
+                .with_expression(expr.source)
+            })
+    }
+
+    pub(crate) fn string(&self, array: ArrayRef<'_>) -> &'values StringValue {
+        let (Value::String(value) | Value::StringArray(value)) = &self.values[array.slot] else {
+            unreachable!("string reference is statically checked");
+        };
+        value
+    }
+
+    fn char_state_error(&self, array: ArrayRef<'_>, offset: usize, state: &str) -> Error {
+        let string = self.string(array);
+        let subscript = if matches!(self.values[array.slot], Value::StringArray(_)) {
+            format!(
+                "[{}][{}]",
+                offset / string.width + 1,
+                offset % string.width + 1
+            )
+        } else {
+            format!("[{}]", offset + 1)
+        };
+        Error::at(
+            array.name.position,
+            format!(
+                "character cell `{}{subscript}` is {state}",
+                array.name.value
+            ),
+        )
+    }
+
+    fn checked_index(
+        &self,
+        expr: &BoundExpr<'_>,
+        length: usize,
+        array: ArrayRef<'_>,
+    ) -> Result<usize, Error> {
+        let index = self.evaluate(expr)?;
+        usize::try_from(index)
+            .ok()
+            .filter(|&index| (1..=length).contains(&index))
+            .map(|index| index - 1)
+            .ok_or_else(|| {
+                Error::at(
+                    expr.position,
+                    format!(
+                        "index {index} is out of bounds for `{}` (length {length}; expected 1..={length})",
+                        array.name.value
+                    ),
+                )
+            })
+    }
+
+    pub(crate) fn string_row_index(&self, element: &BoundElement<'_>) -> Result<usize, Error> {
+        let string = self.string(element.array);
+        self.checked_index(
+            &element.index,
+            string.cells.len() / string.width,
+            element.array,
+        )
+    }
+
+    fn char_offset(&self, element: &BoundElement<'_>) -> Result<usize, Error> {
+        let string = self.string(element.array);
+        if let Some(column) = &element.second_index {
+            // Validate the outer index before evaluating the inner expression.
+            let row = self.string_row_index(element)?;
+            let column = self.checked_index(column, string.width, element.array)?;
+            Ok(row * string.width + column)
+        } else {
+            self.checked_index(&element.index, string.width, element.array)
+        }
+    }
+
+    pub(crate) fn char_element(&self, element: &BoundElement<'_>) -> Result<u8, Error> {
+        let offset = self.char_offset(element)?;
+        let value = self.string(element.array).cells[offset];
+        if value == 0 {
+            Err(self.char_state_error(element.array, offset, "uninitialized"))
+        } else {
+            Ok(value)
+        }
+    }
+
+    pub(crate) fn initialized_string_row(
+        &self,
+        array: ArrayRef<'_>,
+        row: usize,
+    ) -> Result<&'values [u8], Error> {
+        let string = self.string(array);
+        let start = row * string.width;
+        let bytes = &string.cells[start..start + string.width];
+        if let Some(offset) = bytes.iter().position(|&byte| byte == 0) {
+            return Err(self.char_state_error(array, start + offset, "uninitialized"));
+        }
+        Ok(bytes)
+    }
+
+    fn character(&self, expr: &BoundExpr<'_>) -> Result<u8, Error> {
+        match &expr.node {
+            ExprNode::CharLiteral(value) => Ok(*value),
+            ExprNode::Element(element) => self.char_element(element),
+            _ => unreachable!("character expression is statically checked"),
+        }
+    }
+
     fn offset(&self, element: &BoundElement<'_>) -> Result<usize, Error> {
         let index = self.evaluate(&element.index)?;
         let length = self.array(element.array).len();
@@ -304,6 +525,7 @@ impl Evaluation<'_> {
     fn evaluate_node(&self, node: &BoundNode<'_>, source: &str) -> Result<i64, Error> {
         match node {
             ExprNode::Literal(value) => Ok(*value),
+            ExprNode::CharLiteral(_) => unreachable!("integer expression is statically checked"),
             ExprNode::Variable(reference) => Ok(match reference {
                 ScalarRef::Global(slot) => self.scalar(*slot),
                 ScalarRef::LoopIndex(index) => self.loop_values[*index],

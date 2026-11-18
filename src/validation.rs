@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::Error;
 use crate::ast::{
-    Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InputStmt, Located, Name,
-    OutputRef, OutputRow, Program, RangeExpr,
+    ComparisonOp, Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt, InitValue,
+    InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeExpr,
 };
 use crate::error::Position;
 
@@ -20,6 +20,11 @@ pub(crate) enum BoundGenerateStmt<'a> {
     },
     Array {
         name: Name<'a>,
+        length: BoundExpr<'a>,
+    },
+    String {
+        name: Name<'a>,
+        count: Option<BoundExpr<'a>>,
         length: BoundExpr<'a>,
     },
     InitElement(BoundElementInit<'a>),
@@ -39,7 +44,9 @@ pub(crate) enum BoundGenerateStmt<'a> {
 impl BoundGenerateStmt<'_> {
     pub(crate) fn position(&self) -> Position {
         match self {
-            Self::Scalar { name, .. } | Self::Array { name, .. } => name.position,
+            Self::Scalar { name, .. } | Self::Array { name, .. } | Self::String { name, .. } => {
+                name.position
+            }
             Self::InitElement(init) => init.target.array.name.position,
             Self::For { position, .. } | Self::If { position, .. } => *position,
         }
@@ -48,7 +55,13 @@ impl BoundGenerateStmt<'_> {
 
 pub(crate) struct BoundElementInit<'a> {
     pub target: BoundElement<'a>,
-    pub range: BoundRange<'a>,
+    pub value: BoundInitValue<'a>,
+}
+
+pub(crate) enum BoundInitValue<'a> {
+    Range(BoundRange<'a>),
+    Alphabet(Vec<u8>),
+    Fixed(BoundExpr<'a>),
 }
 
 pub(crate) enum BoundInputStmt<'a> {
@@ -90,6 +103,10 @@ pub(crate) enum BoundOutputRef<'a> {
     Scalar(usize),
     WholeArray(ArrayRef<'a>),
     Element(BoundElement<'a>),
+    WholeString(ArrayRef<'a>),
+    WholeStringArray(ArrayRef<'a>),
+    StringRow(BoundElement<'a>),
+    Char(BoundElement<'a>),
 }
 
 #[derive(Clone, Copy)]
@@ -107,13 +124,26 @@ pub(crate) struct ArrayRef<'a> {
 pub(crate) type BoundElement<'a> = ElementRef<'a, ScalarRef, ArrayRef<'a>>;
 pub(crate) type BoundExpr<'a> = Expr<'a, ScalarRef, ArrayRef<'a>>;
 pub(crate) type BoundRange<'a> = RangeExpr<'a, ScalarRef, ArrayRef<'a>>;
-pub(crate) type BoundCondition<'a> = Condition<'a, ScalarRef, ArrayRef<'a>>;
+pub(crate) enum BoundCondition<'a> {
+    Int(Condition<'a, ScalarRef, ArrayRef<'a>>),
+    Char(Condition<'a, ScalarRef, ArrayRef<'a>>),
+}
 pub(crate) type BoundNode<'a> = ExprNode<'a, ScalarRef, ArrayRef<'a>>;
 
 #[derive(Clone, Copy)]
 enum Kind {
     Scalar,
     Array,
+    String,
+    StringArray,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Type {
+    Int,
+    Char,
+    String,
+    StringArray,
 }
 
 #[derive(Clone, Copy)]
@@ -159,6 +189,14 @@ impl<'a> Names<'a> {
             match statement {
                 GenerateStmt::GenerateScalar { name, .. } => self.declare(*name, Kind::Scalar)?,
                 GenerateStmt::DeclareArray { name, .. } => self.declare(*name, Kind::Array)?,
+                GenerateStmt::DeclareString { name, count, .. } => self.declare(
+                    *name,
+                    if count.is_some() {
+                        Kind::StringArray
+                    } else {
+                        Kind::String
+                    },
+                )?,
                 GenerateStmt::For { variable, body, .. } => {
                     self.register_loop(*variable)?;
                     self.register_generate(body)?;
@@ -262,6 +300,20 @@ impl<'a> Resolver<'_, 'a> {
                 let length = self.expr(length)?;
                 self.available += 1;
                 BoundGenerateStmt::Array { name, length }
+            }
+            GenerateStmt::DeclareString {
+                name,
+                count,
+                length,
+            } => {
+                let count = count.map(|expr| self.expr(expr)).transpose()?;
+                let length = self.expr(length)?;
+                self.available += 1;
+                BoundGenerateStmt::String {
+                    name,
+                    count,
+                    length,
+                }
             }
             GenerateStmt::InitElement(init) => BoundGenerateStmt::InitElement(self.init(init)?),
             GenerateStmt::If {
@@ -367,7 +419,7 @@ impl<'a> Resolver<'_, 'a> {
             .position(|&variable| variable == name.value)
     }
 
-    fn element(&self, element: ElementRef<'a>) -> Result<BoundElement<'a>, Error> {
+    fn element(&self, element: ElementRef<'a>) -> Result<(BoundElement<'a>, Type), Error> {
         let name = element.array;
         if self.loop_index(name).is_some() {
             return Err(Error::at(
@@ -376,26 +428,74 @@ impl<'a> Resolver<'_, 'a> {
             ));
         }
         let binding = self.global(name)?;
-        match binding.kind {
-            Kind::Scalar => Err(Error::at(
+        if matches!(binding.kind, Kind::Scalar) {
+            return Err(Error::at(
                 name.position,
                 format!("`{}` is a scalar; expected an array", name.value),
-            )),
-            Kind::Array => Ok(BoundElement {
+            ));
+        }
+        if element.second_index.is_some() && !matches!(binding.kind, Kind::StringArray) {
+            return Err(Error::at(
+                name.position,
+                "only a StringArray accepts two subscripts",
+            ));
+        }
+        let ty = match binding.kind {
+            Kind::Array => Type::Int,
+            Kind::String => Type::Char,
+            Kind::StringArray if element.second_index.is_some() => Type::Char,
+            Kind::StringArray => Type::String,
+            Kind::Scalar => unreachable!(),
+        };
+        Ok((
+            BoundElement {
                 array: ArrayRef {
                     name,
                     slot: binding.slot,
                 },
                 index: self.expr(element.index)?,
-            }),
-        }
+                second_index: element
+                    .second_index
+                    .map(|expr| self.expr(expr))
+                    .transpose()?,
+            },
+            ty,
+        ))
     }
 
     fn init(&self, init: ElementInit<'a>) -> Result<BoundElementInit<'a>, Error> {
-        Ok(BoundElementInit {
-            target: self.element(init.target)?,
-            range: self.range(init.range)?,
-        })
+        let position = init.target.array.position;
+        let (target, ty) = self.element(init.target)?;
+        let value = match init.value {
+            InitValue::Range(range) => {
+                require_type(ty, Type::Int, position)?;
+                BoundInitValue::Range(self.range(range)?)
+            }
+            InitValue::Alphabet(bytes) => {
+                require_type(ty, Type::Char, position)?;
+                let mut seen = [false; 128];
+                for &byte in &bytes.value {
+                    if std::mem::replace(&mut seen[usize::from(byte)], true) {
+                        return Err(Error::at(
+                            bytes.position,
+                            format!(
+                                "duplicate character `{}` in candidate alphabet",
+                                char::from(byte)
+                            ),
+                        ));
+                    }
+                }
+                BoundInitValue::Alphabet(bytes.value)
+            }
+            InitValue::Fixed(expr) => {
+                require_type(ty, Type::Char, position)?;
+                let position = expr.position;
+                let (expr, ty) = self.typed_expr(expr)?;
+                require_type(ty, Type::Char, position)?;
+                BoundInitValue::Fixed(expr)
+            }
+        };
+        Ok(BoundElementInit { target, value })
     }
 
     fn range(&self, range: RangeExpr<'a>) -> Result<BoundRange<'a>, Error> {
@@ -408,51 +508,114 @@ impl<'a> Resolver<'_, 'a> {
     }
 
     fn condition(&self, condition: Condition<'a>) -> Result<BoundCondition<'a>, Error> {
-        Ok(BoundCondition {
-            left: self.expr(condition.left)?,
+        let position = condition.left.position;
+        let right_position = condition.right.position;
+        let (left, ty) = self.typed_expr(condition.left)?;
+        let (right, right_ty) = self.typed_expr(condition.right)?;
+        require_type(right_ty, ty, right_position)?;
+        let bound = Condition {
+            left,
             op: condition.op,
-            right: self.expr(condition.right)?,
-        })
+            op_position: condition.op_position,
+            right,
+        };
+        match ty {
+            Type::Int => Ok(BoundCondition::Int(bound)),
+            Type::Char if matches!(condition.op, ComparisonOp::Equal | ComparisonOp::NotEqual) => {
+                Ok(BoundCondition::Char(bound))
+            }
+            Type::Char => Err(Error::at(
+                condition.op_position,
+                "Char comparisons support only `==` and `!=`",
+            )),
+            _ => Err(Error::at(
+                position,
+                "whole strings and arrays cannot be compared",
+            )),
+        }
     }
 
     fn expr(&self, expr: Expr<'a>) -> Result<BoundExpr<'a>, Error> {
-        Ok(Expr {
-            position: expr.position,
-            source: expr.source,
-            node: self.node(expr.node)?,
-        })
+        let position = expr.position;
+        let (expr, ty) = self.typed_expr(expr)?;
+        require_type(ty, Type::Int, position)?;
+        Ok(expr)
     }
 
-    fn node(&self, node: ExprNode<'a>) -> Result<BoundNode<'a>, Error> {
+    fn typed_expr(&self, expr: Expr<'a>) -> Result<(BoundExpr<'a>, Type), Error> {
+        let (node, ty) = self.node(expr.node, expr.position)?;
+        Ok((
+            Expr {
+                position: expr.position,
+                source: expr.source,
+                node,
+            },
+            ty,
+        ))
+    }
+
+    fn node(&self, node: ExprNode<'a>, position: Position) -> Result<(BoundNode<'a>, Type), Error> {
         Ok(match node {
-            ExprNode::Literal(value) => ExprNode::Literal(value),
+            ExprNode::Literal(value) => (ExprNode::Literal(value), Type::Int),
+            ExprNode::CharLiteral(value) => (ExprNode::CharLiteral(value), Type::Char),
             ExprNode::Variable(name) => {
-                let reference = if let Some(index) = self.loop_index(name) {
-                    ScalarRef::LoopIndex(index)
+                let (reference, ty) = if let Some(index) = self.loop_index(name) {
+                    (ScalarRef::LoopIndex(index), Type::Int)
                 } else {
                     let binding = self.global(name)?;
-                    if let Kind::Array = binding.kind {
-                        return Err(Error::at(
-                            name.position,
-                            format!("`{}` is an array; expected a scalar", name.value),
-                        ));
-                    }
-                    ScalarRef::Global(binding.slot)
+                    let ty = match binding.kind {
+                        Kind::Array => {
+                            return Err(Error::at(
+                                name.position,
+                                format!("`{}` is an array; expected a scalar", name.value),
+                            ));
+                        }
+                        Kind::Scalar => Type::Int,
+                        Kind::String => Type::String,
+                        Kind::StringArray => Type::StringArray,
+                    };
+                    (ScalarRef::Global(binding.slot), ty)
                 };
-                ExprNode::Variable(reference)
+                (ExprNode::Variable(reference), ty)
             }
-            ExprNode::Element(element) => ExprNode::Element(Box::new(self.element(*element)?)),
-            ExprNode::Unary { op, operand } => ExprNode::Unary {
-                op,
-                operand: Box::new(self.node(*operand)?),
-            },
-            ExprNode::Binary { first, rest } => ExprNode::Binary {
-                first: Box::new(self.node(*first)?),
-                rest: rest
+            ExprNode::Element(element) => {
+                let (element, ty) = self.element(*element)?;
+                (ExprNode::Element(Box::new(element)), ty)
+            }
+            ExprNode::Unary { op, operand } => {
+                let (operand, ty) = self.node(*operand, position)?;
+                require_type(ty, Type::Int, op.position)?;
+                (
+                    ExprNode::Unary {
+                        op,
+                        operand: Box::new(operand),
+                    },
+                    Type::Int,
+                )
+            }
+            ExprNode::Binary { first, rest } => {
+                let (first, ty) = self.node(*first, position)?;
+                require_type(
+                    ty,
+                    Type::Int,
+                    rest.first().map_or(position, |(op, _)| op.position),
+                )?;
+                let rest = rest
                     .into_iter()
-                    .map(|(op, operand)| Ok((op, self.node(operand)?)))
-                    .collect::<Result<_, Error>>()?,
-            },
+                    .map(|(op, operand)| {
+                        let (operand, ty) = self.node(operand, op.position)?;
+                        require_type(ty, Type::Int, op.position)?;
+                        Ok((op, operand))
+                    })
+                    .collect::<Result<_, Error>>()?;
+                (
+                    ExprNode::Binary {
+                        first: Box::new(first),
+                        rest,
+                    },
+                    Type::Int,
+                )
+            }
         })
     }
 
@@ -481,17 +644,37 @@ impl<'a> Resolver<'_, 'a> {
                 let value = match kind {
                     Kind::Scalar => BoundOutputRef::Scalar(slot),
                     Kind::Array => BoundOutputRef::WholeArray(ArrayRef { name, slot }),
+                    Kind::String => BoundOutputRef::WholeString(ArrayRef { name, slot }),
+                    Kind::StringArray => BoundOutputRef::WholeStringArray(ArrayRef { name, slot }),
                 };
                 (name, value)
             }
-            OutputRef::Element(element) => (
-                element.array,
-                BoundOutputRef::Element(self.element(element)?),
-            ),
+            OutputRef::Element(element) => {
+                let name = element.array;
+                let (element, ty) = self.element(element)?;
+                let value = match ty {
+                    Type::Int => BoundOutputRef::Element(element),
+                    Type::Char => BoundOutputRef::Char(element),
+                    Type::String => BoundOutputRef::StringRow(element),
+                    Type::StringArray => unreachable!(),
+                };
+                (name, value)
+            }
         };
         Ok(Located {
             value,
             position: name.position,
         })
+    }
+}
+
+fn require_type(actual: Type, expected: Type, position: Position) -> Result<(), Error> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::at(
+            position,
+            format!("type mismatch: expected {expected:?}, got {actual:?}"),
+        ))
     }
 }

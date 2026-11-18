@@ -1,12 +1,12 @@
 contest = "abc400"
 problem = "d"
 url = "https://atcoder.jp/contests/abc400/tasks/abc400_d"
-status = "unsupported"
-coverage = "none"
+status = "supported"
+coverage = "representative"
 description = "1 行目に H W、続く H 行に文字グリッド、最終行に始点と終点の座標 A B C D"
 constraints = [
     "H, W は 1..=1000 の整数。各グリッド行は '.' と '#' のみからなる長さ W の文字列。",
     "A, C は 1..=H、B, D は 1..=W の整数。(A,B) と (C,D) は相異なる道のマス。",
 ]
-limitations = ["input は整数のみを出力するため、全マスを道に固定してもグリッド行を出力できない。"]
-missing_features = ["文字列または文字リテラルの生成と出力", "座標で指定したグリッドセルと文字値の依存関係"]
+limitations = []
+missing_features = []

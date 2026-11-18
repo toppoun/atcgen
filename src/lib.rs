@@ -18,3 +18,6 @@ pub fn generate(source: &str, seed: u64) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod string_tests;

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import tomllib
 
 
@@ -14,6 +15,7 @@ CORPUS = ROOT / "corpus" / "atcoder"
 SEEDS = (0, 1, 42, 100, 7, 19, 23, 49, 127, 255, 1024, 65535, 2**63, 2**64 - 1)
 # Additional seeds and their expected first-row integer (N or T).
 BOUNDARY_SEEDS = {("abc370", "b"): {29: 1, 217: 100}, ("abc482", "g"): {2: 1, 17: 10}}
+ABC400D_DIMENSIONS = ((1, 2), (2, 1), (1, 1000), (1000, 1), (1000, 1000))
 STATUSES = ("supported", "format-only", "unsupported")
 COVERAGES = ("representative", "restricted", "none")
 INTEGER = re.compile(rb"-?[0-9]+")
@@ -43,6 +45,15 @@ class Input:
 
     def finish(self) -> None:
         require(self.index == len(self.lines), f"line {self.index + 1}: unexpected extra row")
+
+    def string_row(self, width: int) -> bytes:
+        line = self.index + 1
+        require(self.index < len(self.lines), f"line {line}: missing string row")
+        value = self.lines[self.index]
+        self.index += 1
+        require(len(value) == width, f"line {line}: expected string length {width}, got {len(value)}")
+        require(all(byte in b".#" for byte in value), f"line {line}: expected only '.' and '#'")
+        return value
 
 
 def in_range(label: str, value: int, lower: int, upper: int) -> None:
@@ -132,6 +143,19 @@ def check_abc400_b(case: Input) -> None:
     in_range("M", m, 1, 100)
 
 
+def check_abc400_d(case: Input) -> None:
+    h, w = case.row(2)
+    in_range("H", h, 1, 1000)
+    in_range("W", w, 1, 1000)
+    grid = [case.string_row(w) for _ in range(h)]
+    a, b, c, d = case.row(4)
+    for label, value, limit in (("A", a, h), ("B", b, w), ("C", c, h), ("D", d, w)):
+        in_range(label, value, 1, limit)
+    require((a, b) != (c, d), "start and goal must be different cells")
+    require(grid[a - 1][b - 1] == ord("."), "start cell must be a road")
+    require(grid[c - 1][d - 1] == ord("."), "goal cell must be a road")
+
+
 def check_abc420_e(case: Input) -> None:
     n, q = case.row(2)
     in_range("N", n, 1, 200_000)
@@ -186,6 +210,7 @@ CHECKERS: dict[tuple[str, str], Callable[[Input], None]] = {
     ("abc370", "b"): check_abc370_b,
     ("abc385", "e"): check_abc385_e,
     ("abc400", "b"): check_abc400_b,
+    ("abc400", "d"): check_abc400_d,
     ("abc420", "e"): check_abc420_e,
     ("abc482", "g"): check_abc482_g,
 }
@@ -251,9 +276,40 @@ def generate(binary: Path, generator: Path, seed: int) -> bytes:
         timeout=30,
     )
     if result.returncode:
+        require(not result.stdout, "generation failed after writing partial stdout")
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"atcgen exited with code {result.returncode}: {detail or '(no diagnostic)'}")
     return result.stdout
+
+
+def abc400_d_boundary_source(source: str, h: int, w: int) -> str:
+    """Fix dimensions while exercising the actual corpus generator's body."""
+    old_h, old_w = "H in 1..=1000", "W in (1+1/H)..=1000"
+    require(source.count(old_h) == source.count(old_w) == 1, "missing ABC400-D dimension declarations")
+    return source.replace(old_h, f"H in {h}..={h}").replace(old_w, f"W in {w}..={w}")
+
+
+def verify_abc400_d_boundaries(binary: Path, generator: Path) -> set[bytes]:
+    outputs = set()
+    source = generator.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="atcgen-abc400-d-") as directory:
+        fixed = Path(directory) / "boundary.gen"
+        for h, w in ABC400D_DIMENSIONS:
+            fixed.write_text(abc400_d_boundary_source(source, h, w), encoding="utf-8")
+            for seed in (0, 42):
+                try:
+                    output = generate(binary, fixed, seed)
+                    require(output == generate(binary, fixed, seed), "same seed produced different bytes")
+                    case = Input(output)
+                    check_abc400_d(case)
+                    case.finish()
+                    require(output.splitlines()[0] == f"{h} {w}".encode(), "incorrect fixed dimensions")
+                    require(len(output) <= 8 * 1024 * 1024, "output exceeds 8 MiB")
+                    require(len(output.split()) == h + 6, "incorrect output token count")
+                    outputs.add(output)
+                except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+                    raise ValueError(f"dimensions {h}x{w}, seed {seed}: {error}") from error
+    return outputs
 
 
 def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
@@ -281,6 +337,8 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
             outputs.add(first)
         except (ValueError, OSError, subprocess.TimeoutExpired) as error:
             raise ValueError(f"seed {seed}: {error}") from error
+    if problem == ("abc400", "d"):
+        outputs.update(verify_abc400_d_boundaries(binary, generator))
     return len(seeds), len(outputs)
 
 
@@ -331,7 +389,8 @@ def main() -> int:
             print(f"FAIL {label}: {classification}: {error}")
         else:
             verified += 1
-            print(f"PASS {label}: {classification}, {seed_count} seeds, {distinct} distinct outputs")
+            boundaries = ", 5 fixed dimensions x 2 seeds" if label == "abc400/d" else ""
+            print(f"PASS {label}: {classification}, {seed_count} seeds{boundaries}, {distinct} distinct outputs")
 
     for generator in sorted(CORPUS.rglob("generator.gen")):
         if not generator.with_name("problem.toml").is_file():

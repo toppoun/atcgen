@@ -1,7 +1,8 @@
 use crate::Error;
 use crate::ast::{
     BinaryOp, ComparisonOp, Condition, ElementInit, ElementRef, Expr, ExprNode, GenerateStmt,
-    InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeEnd, RangeExpr, UnaryOp,
+    InitValue, InputStmt, Located, Name, OutputRef, OutputRow, Program, RangeEnd, RangeExpr,
+    UnaryOp,
 };
 use crate::error::Position;
 
@@ -269,7 +270,12 @@ impl<'a> Line<'a> {
         let right = self.expression(0)?;
         self.expect("{")?;
         self.finish()?;
-        Ok(Condition { left, op, right })
+        Ok(Condition {
+            left,
+            op,
+            op_position: position,
+            right,
+        })
     }
 
     fn identifier(&mut self) -> Result<Name<'a>, Error> {
@@ -395,6 +401,13 @@ impl<'a> Line<'a> {
             return Ok(node);
         }
         match self.remaining().bytes().next() {
+            Some(b'\'') => {
+                let bytes = self.quoted(b'\'')?;
+                if bytes.len() != 1 {
+                    return Err(Error::at(position, "expected exactly one ASCII character"));
+                }
+                Ok(ExprNode::CharLiteral(bytes[0]))
+            }
             Some(byte) if identifier_start(byte) => {
                 let name = self.variable_name()?;
                 if self.consume("[") {
@@ -432,22 +445,47 @@ impl<'a> Line<'a> {
     fn element_ref(&mut self, array: Name<'a>, nesting: usize) -> Result<ElementRef<'a>, Error> {
         let index = self.expression(nesting)?;
         self.expect("]")?;
-        Ok(ElementRef { array, index })
+        let second_index = if self.consume("[") {
+            let index = self.expression(nesting + 1)?;
+            self.expect("]")?;
+            Some(index)
+        } else {
+            None
+        };
+        Ok(ElementRef {
+            array,
+            index,
+            second_index,
+        })
     }
 
     fn generate_line(&mut self) -> Result<GenerateStmt<'a>, Error> {
         let name = self.variable_name()?;
         let statement = if self.consume("[") {
-            if self.has_init_range() {
+            if self.has_initialization() {
                 let target = self.element_ref(name, 1)?;
-                self.keyword("in")?;
-                let range = self.range()?;
-                GenerateStmt::InitElement(ElementInit { target, range })
+                let value = if self.consume("=") {
+                    InitValue::Fixed(self.expression(0)?)
+                } else {
+                    self.keyword("in")?;
+                    if self.remaining().starts_with('"') {
+                        InitValue::Alphabet(self.alphabet()?)
+                    } else {
+                        InitValue::Range(self.range()?)
+                    }
+                };
+                GenerateStmt::InitElement(ElementInit { target, value })
             } else {
                 let length = self.expression(0)?;
                 self.expect("]")?;
-                GenerateStmt::DeclareArray { name, length }
+                if self.consume(":") {
+                    self.string_declaration(name, Some(length))?
+                } else {
+                    GenerateStmt::DeclareArray { name, length }
+                }
             }
+        } else if self.consume(":") {
+            self.string_declaration(name, None)?
         } else {
             self.keyword("in")?;
             let range = self.range()?;
@@ -459,23 +497,93 @@ impl<'a> Line<'a> {
 
     // Classify the brackets before parsing their expression, since a length
     // starts at depth 0 and an element subscript starts at depth 1.
-    fn has_init_range(&self) -> bool {
+    fn has_initialization(&self) -> bool {
         let remaining = self.remaining();
         let mut nested = 0;
         for (offset, byte) in remaining.bytes().enumerate() {
             match byte {
                 b'[' => nested += 1,
                 b']' if nested == 0 => {
-                    return starts_keyword(
-                        remaining[offset + 1..].trim_start_matches([' ', '\t']),
-                        "in",
-                    );
+                    let tail = remaining[offset + 1..].trim_start_matches([' ', '\t']);
+                    return tail.starts_with('[')
+                        || starts_keyword(tail, "in")
+                        || tail.starts_with('=');
                 }
                 b']' => nested -= 1,
                 _ => {}
             }
         }
         false
+    }
+
+    fn string_declaration(
+        &mut self,
+        name: Name<'a>,
+        count: Option<Expr<'a>>,
+    ) -> Result<GenerateStmt<'a>, Error> {
+        self.keyword("string")?;
+        self.expect("[")?;
+        let length = self.expression(0)?;
+        self.expect("]")?;
+        Ok(GenerateStmt::DeclareString {
+            name,
+            count,
+            length,
+        })
+    }
+
+    // Read literal bytes without trimming whitespace inside quotes.
+    fn quoted(&mut self, quote: u8) -> Result<Vec<u8>, Error> {
+        let position = self.position();
+        self.expect(if quote == b'\'' { "'" } else { "\"" })?;
+        let mut bytes = Vec::new();
+        loop {
+            let position = Position {
+                line: self.number,
+                column: self.length - self.rest.len() + 1,
+            };
+            let Some(byte) = self.rest.bytes().next() else {
+                return Err(Error::at(position, "unterminated quoted literal"));
+            };
+            if byte == quote {
+                self.rest = &self.rest[1..];
+                break;
+            }
+            if byte == b'\\' {
+                self.rest = &self.rest[1..];
+                let Some(escaped @ (b'\\' | b'\'' | b'"')) = self.rest.bytes().next() else {
+                    return Err(Error::at(
+                        position,
+                        "invalid escape; expected escaped quote or backslash",
+                    ));
+                };
+                bytes.push(escaped);
+            } else if (0x21..=0x7e).contains(&byte) {
+                bytes.push(byte);
+            } else {
+                return Err(Error::at(
+                    position,
+                    "expected a non-whitespace, non-control ASCII character",
+                ));
+            }
+            self.rest = &self.rest[1..];
+        }
+        if bytes.is_empty() {
+            return Err(Error::at(
+                position,
+                "empty character literal or candidate alphabet",
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn alphabet(&mut self) -> Result<Located<Vec<u8>>, Error> {
+        let position = self.position();
+        let bytes = self.quoted(b'"')?;
+        Ok(Located {
+            value: bytes,
+            position,
+        })
     }
 
     fn output_row(&mut self) -> Result<OutputRow<'a>, Error> {

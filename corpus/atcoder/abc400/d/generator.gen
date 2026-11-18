@@ -1,0 +1,33 @@
+generate {
+    H in 1..=1000
+    W in (1+1/H)..=1000
+    First in 1..=H*W
+    Distance in 1..=(H*W-1)
+    Last in ((First+Distance-1)%(H*W)+1)..=((First+Distance-1)%(H*W)+1)
+    A in ((First-1)/W+1)..=((First-1)/W+1)
+    B in ((First-1)%W+1)..=((First-1)%W+1)
+    C in ((Last-1)/W+1)..=((Last-1)/W+1)
+    D in ((Last-1)%W+1)..=((Last-1)%W+1)
+    G[H] : string[W]
+    for i in 1..=H {
+        for j in 1..=W {
+            if (i-1)*W+j == First {
+                G[i][j] = '.'
+            } else {
+                if (i-1)*W+j == Last {
+                    G[i][j] = '.'
+                } else {
+                    G[i][j] in ".#"
+                }
+            }
+        }
+    }
+}
+
+input {
+    H W
+    for i in 1..=H {
+        G[i]
+    }
+    A B C D
+}
