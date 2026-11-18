@@ -17,6 +17,7 @@ SEEDS = (0, 1, 42, 100, 7, 19, 23, 49, 127, 255, 1024, 65535, 2**63, 2**64 - 1)
 BOUNDARY_SEEDS = {("abc370", "b"): {29: 1, 217: 100}, ("abc482", "g"): {2: 1, 17: 10}}
 ABC400D_DIMENSIONS = ((1, 2), (2, 1), (1, 1000), (1000, 1), (1000, 1000))
 ABC355B_DIMENSIONS = ((1, 1), (1, 100), (100, 1), (100, 100))
+ABC385E_SIZES = (3, 64, 300_000)
 ABC300A_PROFILES = (
     (1, 1, 1, 1),
     (1, 1000, 1000, 1),
@@ -411,6 +412,57 @@ def verify_abc300_a_diversity(binary: Path, generator: Path) -> set[bytes]:
     return outputs
 
 
+def abc385_e_boundary_source(source: str, n: int) -> str:
+    """Keep both permutations, the parent construction, and output unchanged."""
+    in_range("fixed N", n, 3, 300_000)
+    return _fix_declarations(source, {"N in 3..=128": f"N in {n}..={n}"})
+
+
+def abc385_e_resources(n: int) -> dict[str, int]:
+    """Exact counts for the corpus construction; bytes are a worst-case bound."""
+    in_range("resource N", n, 3, 300_000)
+    digits = len(str(n))
+    return {
+        "array_elements": 3 * n - 2,
+        "generated_integers": 3 * n - 1,
+        "output_tokens": 2 * n - 1,
+        "output_bytes_upper_bound": digits + 1 + (n - 1) * (2 * digits + 2),
+        "generate_work": 6 * n + 3,
+        "input_work": 3 * n - 1,
+        "unique_width": n,
+        "unique_payload_bytes": 8 * n,
+    }
+
+
+def verify_abc385_e_boundaries(binary: Path, generator: Path) -> set[bytes]:
+    outputs = set()
+    source = generator.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="atcgen-abc385-e-") as directory:
+        fixed = Path(directory) / "boundary.gen"
+        for n in ABC385E_SIZES:
+            resources = abc385_e_resources(n)
+            for name in ("array_elements", "generated_integers", "output_tokens", "unique_width"):
+                require(resources[name] <= 1_000_000, f"N={n}: {name} exceeds limit")
+            for name in ("generate_work", "input_work"):
+                require(resources[name] <= 10_000_000, f"N={n}: {name} exceeds limit")
+            require(resources["unique_payload_bytes"] <= 16_000_000, f"N={n}: U1 workspace exceeds limit")
+            require(resources["output_bytes_upper_bound"] <= 8 * 1024 * 1024, f"N={n}: byte bound exceeds limit")
+            fixed.write_text(abc385_e_boundary_source(source, n), encoding="utf-8")
+            for seed in (0, 42):
+                context = f"N={n}, seed {seed}"
+                output = _checked_generation(binary, fixed, seed, check_abc385_e, f"N={n}")
+                lines = output.splitlines()
+                require(lines[0] == str(n).encode(), f"{context}: incorrect header")
+                require(len(lines) == n, f"{context}: incorrect row count")
+                require(
+                    sum(len(row.split()) for row in lines) == resources["output_tokens"],
+                    f"{context}: incorrect output token count",
+                )
+                require(len(output) <= resources["output_bytes_upper_bound"], f"{context}: byte bound exceeded")
+                outputs.add(output)
+    return outputs
+
+
 def abc400_d_boundary_source(source: str, h: int, w: int) -> str:
     """Fix dimensions while exercising the actual corpus generator's body."""
     old_h, old_w = "H in 1..=1000", "W in (1+1/H)..=1000"
@@ -473,6 +525,8 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
     elif problem == ("abc300", "a"):
         outputs.update(verify_abc300_a_boundaries(binary, generator))
         outputs.update(verify_abc300_a_diversity(binary, generator))
+    elif problem == ("abc385", "e"):
+        outputs.update(verify_abc385_e_boundaries(binary, generator))
     return len(seeds), len(outputs)
 
 
@@ -527,6 +581,7 @@ def main() -> int:
                 "abc400/d": ", 5 fixed dimensions x 2 seeds",
                 "abc355/b": ", 4 fixed sizes x 2 seeds",
                 "abc300/a": ", 8 fixed profiles x 2 seeds, 14 fixed-header diversity seeds",
+                "abc385/e": ", 3 fixed sizes x 2 seeds (including N=300000)",
             }.get(label, "")
             print(f"PASS {label}: {classification}, {seed_count} seeds{boundaries}, {distinct} distinct outputs")
 
