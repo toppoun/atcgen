@@ -16,6 +16,17 @@ SEEDS = (0, 1, 42, 100, 7, 19, 23, 49, 127, 255, 1024, 65535, 2**63, 2**64 - 1)
 # Additional seeds and their expected first-row integer (N or T).
 BOUNDARY_SEEDS = {("abc370", "b"): {29: 1, 217: 100}, ("abc482", "g"): {2: 1, 17: 10}}
 ABC400D_DIMENSIONS = ((1, 2), (2, 1), (1, 1000), (1000, 1), (1000, 1000))
+ABC355B_DIMENSIONS = ((1, 1), (1, 100), (100, 1), (100, 100))
+ABC300A_PROFILES = (
+    (1, 1, 1, 1),
+    (1, 1000, 1000, 1),
+    (300, 1, 1, 1),
+    (300, 1, 1, 150),
+    (300, 1, 1, 300),
+    (300, 1000, 1000, 1),
+    (300, 1000, 1000, 150),
+    (300, 1000, 1000, 300),
+)
 STATUSES = ("supported", "format-only", "unsupported")
 COVERAGES = ("representative", "restricted", "none")
 INTEGER = re.compile(rb"-?[0-9]+")
@@ -282,6 +293,124 @@ def generate(binary: Path, generator: Path, seed: int) -> bytes:
     return result.stdout
 
 
+def _fix_declarations(source: str, replacements: dict[str, str]) -> str:
+    for original, fixed in replacements.items():
+        require(source.count(original) == 1, f"missing or repeated declaration: {original}")
+        source = source.replace(original, fixed)
+    return source
+
+
+def abc355_b_boundary_source(source: str, n: int, m: int) -> str:
+    """Fix lengths while retaining the actual corpus generator's U1 operations."""
+    in_range("fixed N", n, 1, 100)
+    in_range("fixed M", m, 1, 100)
+    return _fix_declarations(source, {
+        "N in 1..=100": f"N in {n}..={n}",
+        "M in 1..=100": f"M in {m}..={m}",
+    })
+
+
+def abc300_a_boundary_source(
+    source: str, n: int, a: int, b: int, answer_index: int | None = None,
+) -> str:
+    """Keep Distractors/C generation intact; optionally leave the answer random."""
+    in_range("fixed N", n, 1, 300)
+    in_range("fixed A", a, 1, 1000)
+    in_range("fixed B", b, 1, 1000)
+    replacements = {
+        "N in 1..=300": f"N in {n}..={n}",
+        "A in 1..=1000": f"A in {a}..={a}",
+        "B in 1..=1000": f"B in {b}..={b}",
+    }
+    if answer_index is not None:
+        in_range("fixed AnswerIndex", answer_index, 1, n)
+        replacements["AnswerIndex in 1..=N"] = f"AnswerIndex in {answer_index}..={answer_index}"
+    return _fix_declarations(source, replacements)
+
+
+def _checked_generation(
+    binary: Path, generator: Path, seed: int, checker: Callable[[Input], None], context: str,
+) -> bytes:
+    try:
+        output = generate(binary, generator, seed)
+        require(output == generate(binary, generator, seed), "same seed produced different bytes")
+        case = Input(output)
+        checker(case)
+        case.finish()
+        return output
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"{context}, seed {seed}: {error}") from error
+
+
+def verify_abc355_b_boundaries(binary: Path, generator: Path) -> set[bytes]:
+    outputs = set()
+    nonlegacy_order = False
+    source = generator.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="atcgen-abc355-b-") as directory:
+        fixed = Path(directory) / "boundary.gen"
+        for n, m in ABC355B_DIMENSIONS:
+            fixed.write_text(abc355_b_boundary_source(source, n, m), encoding="utf-8")
+            for seed in (0, 42):
+                context = f"N={n}, M={m}"
+                output = _checked_generation(binary, fixed, seed, check_abc355_b, context)
+                require(output.splitlines()[0] == f"{n} {m}".encode(), f"{context}: incorrect header")
+                values = [int(value) for row in output.splitlines()[1:] for value in row.split()]
+                if n + m == 200:
+                    require(set(values) == set(range(1, 201)), f"{context}: missing domain values")
+                nonlegacy_order |= any(
+                    (right - left) % 200 != 37 for left, right in zip(values, values[1:])
+                )
+                outputs.add(output)
+    require(nonlegacy_order, "ABC355-B outputs still follow the old step-37 sequence")
+    return outputs
+
+
+def verify_abc300_a_boundaries(binary: Path, generator: Path) -> set[bytes]:
+    outputs = set()
+    source = generator.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="atcgen-abc300-a-") as directory:
+        fixed = Path(directory) / "boundary.gen"
+        for n, a, b, answer in ABC300A_PROFILES:
+            fixed.write_text(abc300_a_boundary_source(source, n, a, b, answer), encoding="utf-8")
+            for seed in (0, 42):
+                context = f"N={n}, A={a}, B={b}, AnswerIndex={answer}"
+                output = _checked_generation(binary, fixed, seed, check_abc300_a, context)
+                lines = output.splitlines()
+                require(lines[0] == f"{n} {a} {b}".encode(), f"{context}: incorrect header")
+                choices = list(map(int, lines[1].split()))
+                require(choices[answer - 1] == a + b, f"{context}: incorrect answer position")
+                outputs.add(output)
+    return outputs
+
+
+def verify_abc300_a_diversity(binary: Path, generator: Path) -> set[bytes]:
+    """Observe structural diversity at fixed N/A/B, without a uniformity claim."""
+    outputs = set()
+    distractors_by_answer: dict[int, set[frozenset[int]]] = {}
+    nonlegacy_order = False
+    source = abc300_a_boundary_source(generator.read_text(encoding="utf-8"), 9, 7, 11)
+    with tempfile.TemporaryDirectory(prefix="atcgen-abc300-a-diversity-") as directory:
+        fixed = Path(directory) / "fixed-header.gen"
+        fixed.write_text(source, encoding="utf-8")
+        for seed in SEEDS:
+            output = _checked_generation(binary, fixed, seed, check_abc300_a, "fixed N=9,A=7,B=11")
+            require(output.splitlines()[0] == b"9 7 11", "incorrect diversity header")
+            choices = list(map(int, output.splitlines()[1].split()))
+            answer = choices.index(18)
+            distractors = frozenset(value for value in choices if value != 18)
+            distractors_by_answer.setdefault(answer, set()).add(distractors)
+            legacy = [(18 - 1 + i - answer) % 2000 + 1 for i in range(9)]
+            nonlegacy_order |= choices != legacy
+            outputs.add(output)
+    require(len(distractors_by_answer) > 1, "ABC300-A answer position did not vary")
+    require(
+        any(len(sets) > 1 for sets in distractors_by_answer.values()),
+        "ABC300-A distractor sets did not vary at the same answer position",
+    )
+    require(nonlegacy_order, "ABC300-A outputs still follow the old cyclic sequence")
+    return outputs
+
+
 def abc400_d_boundary_source(source: str, h: int, w: int) -> str:
     """Fix dimensions while exercising the actual corpus generator's body."""
     old_h, old_w = "H in 1..=1000", "W in (1+1/H)..=1000"
@@ -339,6 +468,11 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
             raise ValueError(f"seed {seed}: {error}") from error
     if problem == ("abc400", "d"):
         outputs.update(verify_abc400_d_boundaries(binary, generator))
+    elif problem == ("abc355", "b"):
+        outputs.update(verify_abc355_b_boundaries(binary, generator))
+    elif problem == ("abc300", "a"):
+        outputs.update(verify_abc300_a_boundaries(binary, generator))
+        outputs.update(verify_abc300_a_diversity(binary, generator))
     return len(seeds), len(outputs)
 
 
@@ -389,7 +523,11 @@ def main() -> int:
             print(f"FAIL {label}: {classification}: {error}")
         else:
             verified += 1
-            boundaries = ", 5 fixed dimensions x 2 seeds" if label == "abc400/d" else ""
+            boundaries = {
+                "abc400/d": ", 5 fixed dimensions x 2 seeds",
+                "abc355/b": ", 4 fixed sizes x 2 seeds",
+                "abc300/a": ", 8 fixed profiles x 2 seeds, 14 fixed-header diversity seeds",
+            }.get(label, "")
             print(f"PASS {label}: {classification}, {seed_count} seeds{boundaries}, {distinct} distinct outputs")
 
     for generator in sorted(CORPUS.rglob("generator.gen")):

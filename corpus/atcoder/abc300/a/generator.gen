@@ -3,9 +3,15 @@ generate {
     A in 1..=1000
     B in 1..=1000
     AnswerIndex in 1..=N
+    Distractors[N]
     C[N]
+    Distractors in unique(1..=2000) except(A+B)
     for i in 1..=N {
-        C[i] in ((A+B+i-AnswerIndex+1999)%2000+1)..=((A+B+i-AnswerIndex+1999)%2000+1)
+        if i == AnswerIndex {
+            C[i] in (A+B)..=(A+B)
+        } else {
+            C[i] in Distractors[i]..=Distractors[i]
+        }
     }
 }
 

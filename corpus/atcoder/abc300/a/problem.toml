@@ -2,13 +2,14 @@ contest = "abc300"
 problem = "a"
 url = "https://atcoder.jp/contests/abc300/tasks/abc300_a"
 status = "supported"
-coverage = "restricted"
-description = "1 行目に N A B、2 行目に N 個の選択肢 C_i"
+coverage = "representative"
+description = "1 行目に N A B、2 行目に N 個の選択肢 C_i。正解位置を抽選し、A+B を除外した U1 の Distractors から誤答候補を配置する。"
 constraints = [
     "1 ≤ N ≤ 300、1 ≤ A, B ≤ 1000、1 ≤ C_i ≤ 2000。すべて整数。",
     "C_i はすべて相異なり、A+B と等しい要素がちょうど 1 個ある。",
 ]
 limitations = [
-    "正解位置を 1..=N から選び、前後の値を 1..=2000 上で循環する連番にして一意性を保証する。任意の選択肢の組や順序は生成しない。",
+    "N=1 も正の配列長で扱うため Distractors を N 個生成し、正解位置に対応する 1 個は使用しない。N=1 でも内部で候補を 1 個抽選する。",
+    "N,A,B は独立に抽選する。固定した N,A,B の C は U1 の抽選モデルで一様だが、A+B 自体や全有効入力に対する一様性は保証しない。",
 ]
 missing_features = []
