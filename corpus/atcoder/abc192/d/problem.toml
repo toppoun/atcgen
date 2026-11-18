@@ -1,0 +1,12 @@
+contest = "abc192"
+problem = "d"
+url = "https://atcoder.jp/contests/abc192/tasks/abc192_d"
+status = "supported"
+coverage = "representative"
+description = "数字文字列Xと整数Mを各1行。非出力のLengthを先に抽選し、Xを整数へ変換せず生成する。"
+constraints = [
+    "Xは長さ1..60のASCII数字文字列で先頭は1..9、残りは0..9。",
+    "1 ≤ M ≤ 10^18。Xの基数解釈の値がM以下となる保証はない。",
+]
+limitations = []
+missing_features = []

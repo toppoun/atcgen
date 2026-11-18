@@ -1,0 +1,22 @@
+generate {
+    N in 2..=100000
+    P[N]
+    Parent[N-1]
+    Order[N-1]
+    P in unique(1..=N)
+    for i in 1..N {
+        Parent[i] in 1..=i
+    }
+    Order in unique(1..=N-1)
+}
+
+input {
+    N
+    for i in 1..N {
+        if P[Parent[Order[i]]] < P[Order[i]+1] {
+            P[Parent[Order[i]]] P[Order[i]+1]
+        } else {
+            P[Order[i]+1] P[Parent[Order[i]]]
+        }
+    }
+}

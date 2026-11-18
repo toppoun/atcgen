@@ -1,0 +1,39 @@
+generate {
+    N in 1..=4096
+    MaxM[1]
+    if 2*N < 256 {
+        MaxM[1] in (2*N)..=(2*N)
+    } else {
+        MaxM[1] in 256..=256
+    }
+    M in 2..=MaxM[1]
+    Order[2*N]
+    Color[N]
+    K[M]
+    Offset[M+1]
+    Order in unique(1..=2*N)
+    for i in 1..=N {
+        Color[i] in i..=i
+    }
+    Offset[1] in 0..=0
+    for t in 1..=M {
+        if t == M {
+            K[t] in (2*N-Offset[t])..=(2*N-Offset[t])
+        } else {
+            K[t] in 1..=(2*N-Offset[t]-(M-t))
+        }
+        Offset[t+1] in (Offset[t]+K[t])..=(Offset[t]+K[t])
+    }
+}
+
+input {
+    N M
+    for t in 1..=M {
+        K[t]
+        row {
+            for j in (Offset[t]+1)..=Offset[t+1] {
+                Color[(Order[j]-1)%N+1]
+            }
+        }
+    }
+}

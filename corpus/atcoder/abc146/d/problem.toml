@@ -1,0 +1,12 @@
+contest = "abc146"
+problem = "d"
+url = "https://atcoder.jp/contests/abc146/tasks/abc146_d"
+status = "supported"
+coverage = "representative"
+description = "Nと木のN-1辺。親構成に頂点順列Pと辺順列Orderを適用し、端点を昇順に出力する。"
+constraints = ["2 ≤ N ≤ 100000、1 ≤ a_i < b_i ≤ N。すべて整数で、グラフは木。"]
+limitations = [
+    "通常生成もN=2..100000。親を子より先に内部番号付けすれば任意の木を構成対象にでき、PとOrderでラベル・辺順も変えられる。",
+    "親構成に由来する木の形の偏りがあり、ラベル付き木や入力全体の一様性、有限seedでの全構造到達は保証しない。",
+]
+missing_features = []

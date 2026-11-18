@@ -2,11 +2,19 @@
 
 from collections import Counter
 from collections.abc import Callable
+import argparse
+from dataclasses import dataclass
+from itertools import product
+import hashlib
 import json
+import math
 from pathlib import Path
+import platform
 import re
+import statistics
 import subprocess
 import tempfile
+from time import perf_counter
 import tomllib
 
 
@@ -31,6 +39,13 @@ ABC300A_PROFILES = (
 STATUSES = ("supported", "format-only", "unsupported")
 COVERAGES = ("representative", "restricted", "none")
 INTEGER = re.compile(rb"-?[0-9]+")
+TASK_ID_EXCEPTIONS = {("abc095", "c"): "arc096_a"}
+BATCH1 = (
+    ("abc095", "c"), ("abc192", "d"), ("abc150", "c"), ("abc302", "f"),
+    ("abc390", "c"), ("abc146", "d"), ("abc303", "e"), ("abc241", "d"),
+    ("abc216", "d"), ("abc339", "f"),
+)
+BATCH1_RESULTS: dict[str, dict] = {}
 
 
 def require(condition: bool, message: str) -> None:
@@ -51,9 +66,17 @@ class Input:
         self.index += 1
         if width is not None and len(tokens) != width:
             raise ValueError(f"line {line}: expected {width} integers, got {len(tokens)}")
-        if not tokens or any(INTEGER.fullmatch(token) is None for token in tokens):
+        if (not tokens and width != 0) or any(INTEGER.fullmatch(token) is None for token in tokens):
             raise ValueError(f"line {line}: expected a row of integers")
         return [int(token) for token in tokens]
+
+    def token(self) -> bytes:
+        line = self.index + 1
+        require(self.index < len(self.lines), f"line {line}: missing row")
+        tokens = self.lines[self.index].split()
+        self.index += 1
+        require(len(tokens) == 1, f"line {line}: expected one token")
+        return tokens[0]
 
     def finish(self) -> None:
         require(self.index == len(self.lines), f"line {self.index + 1}: unexpected extra row")
@@ -214,7 +237,177 @@ def check_abc482_g(case: Input) -> None:
     in_range("sum of sum(A)^3 across cases", total_cubes, 0, 500**3)
 
 
+def check_abc095_c(case: Input) -> None:
+    a, b, c, x, y = case.row(5)
+    for name, value in (("A", a), ("B", b), ("C", c)):
+        in_range(name, value, 1, 5000)
+    for name, value in (("X", x), ("Y", y)):
+        in_range(name, value, 1, 100_000)
+
+
+def decimal_token(case: Input, max_digits: int) -> bytes:
+    value = case.token()
+    in_range("decimal length", len(value), 1, max_digits)
+    require(re.fullmatch(rb"[1-9][0-9]*", value) is not None, "expected positive decimal without leading zero")
+    return value
+
+
+def check_abc192_d(case: Input) -> None:
+    decimal_token(case, 60)
+    (m,) = case.row(1)
+    in_range("M", m, 1, 10**18)
+
+
+def check_abc150_c(case: Input) -> None:
+    (n,) = case.row(1)
+    in_range("N", n, 2, 8)
+    for name in ("P", "Q"):
+        values = case.row(n)
+        require(sorted(values) == list(range(1, n + 1)), f"{name} must be a permutation of 1..N")
+
+
+def check_abc302_f(case: Input) -> None:
+    n, m = case.row(2)
+    in_range("N", n, 1, 200_000)
+    in_range("M", m, 2, 200_000)
+    total = 0
+    for i in range(1, n + 1):
+        (length,) = case.row(1)
+        # No positive lower bound for an individual set is stated officially.
+        in_range(f"A[{i}]", length, 0, m)
+        values = case.row(length)
+        for value in values:
+            in_range(f"set {i} value", value, 1, m)
+        require(len(set(values)) == length, f"set {i}: elements must be distinct")
+        total += length
+    in_range("sum(A)", total, 1, 500_000)
+
+
+def check_abc390_c(case: Input) -> None:
+    h, w = case.row(2)
+    in_range("H", h, 1, 1000)
+    in_range("W", w, 1, 1000)
+    black = False
+    for i in range(1, h + 1):
+        row = case.token()
+        require(len(row) == w, f"row {i}: expected width {w}")
+        require(all(value in b"#.?" for value in row), f"row {i}: expected only '#', '.', '?'")
+        black |= b"#" in row
+    require(black, "at least one '#' is required")
+
+
+def read_tree(case: Input, n: int, ordered: bool) -> list[list[int]]:
+    neighbors: list[list[int]] = [[] for _ in range(n + 1)]
+    for i in range(1, n):
+        u, v = case.row(2)
+        in_range(f"edge {i} u", u, 1, n)
+        in_range(f"edge {i} v", v, 1, n)
+        require(u != v, f"edge {i}: self loop")
+        if ordered:
+            require(u < v, f"edge {i}: expected u < v")
+        neighbors[u].append(v)
+        neighbors[v].append(u)
+    seen = bytearray(n + 1)
+    seen[1] = 1
+    stack = [(1, 0)]
+    visited = 0
+    while stack:
+        vertex, parent = stack.pop()
+        visited += 1
+        for child in neighbors[vertex]:
+            if child == parent:
+                continue
+            require(not seen[child], "tree contains a cycle or duplicate edge")
+            seen[child] = 1
+            stack.append((child, vertex))
+    require(visited == n, "tree must be connected")
+    return neighbors
+
+
+def check_abc146_d(case: Input) -> None:
+    (n,) = case.row(1)
+    in_range("N", n, 2, 100_000)
+    read_tree(case, n, ordered=True)
+
+
+def check_abc303_e(case: Input) -> None:
+    (n,) = case.row(1)
+    in_range("N", n, 3, 200_000)
+    neighbors = read_tree(case, n, ordered=False)
+    # Any final leaf must be an unused original leaf, forcing its neighbor to
+    # be a star center. Centers are then exactly the vertices at depth 0 mod 3.
+    leaf = next(v for v in range(1, n + 1) if len(neighbors[v]) == 1)
+    root = neighbors[leaf][0]
+    depth = [-1] * (n + 1)
+    depth[root] = 0
+    stack = [root]
+    while stack:
+        vertex = stack.pop()
+        for child in neighbors[vertex]:
+            if depth[child] == -1:
+                depth[child] = depth[vertex] + 1
+                stack.append(child)
+    for vertex in range(1, n + 1):
+        if depth[vertex] % 3 == 0:
+            require(len(neighbors[vertex]) >= 2, "star center must have level >= 2")
+        else:
+            require(len(neighbors[vertex]) <= 2, "original star leaf was used more than once")
+            centers = sum(depth[other] % 3 == 0 for other in neighbors[vertex])
+            require(centers == 1, "each original leaf must have exactly one adjacent star center")
+    # These disjoint stars cover every vertex. Remaining leaf-leaf edges form
+    # a matching, and contracting the stars in a tree gives a tree, so those
+    # edges can be added between different components in the official order.
+
+
+def check_abc241_d(case: Input) -> None:
+    (q,) = case.row(1)
+    in_range("Q", q, 1, 200_000)
+    for i in range(1, q + 1):
+        query = case.row()
+        kind = query[0]
+        in_range(f"query {i} kind", kind, 1, 3)
+        require(len(query) == (2 if kind == 1 else 3), f"query {i}: incorrect row width")
+        in_range(f"query {i} x", query[1], 1, 10**18)
+        if kind != 1:
+            in_range(f"query {i} k", query[2], 1, 5)
+
+
+def check_abc216_d(case: Input) -> None:
+    n, m = case.row(2)
+    in_range("N", n, 1, 200_000)
+    in_range("M", m, 2, 200_000)
+    counts = [0] * (n + 1)
+    total = 0
+    for i in range(1, m + 1):
+        (length,) = case.row(1)
+        in_range(f"k[{i}]", length, 1, 2 * n)
+        total += length
+        require(total <= 2 * n, "sum(k) exceeds 2N")
+        for value in case.row(length):
+            in_range(f"tube {i} color", value, 1, n)
+            counts[value] += 1
+    require(total == 2 * n, "sum(k) must equal 2N")
+    require(all(count == 2 for count in counts[1:]), "each color must occur exactly twice")
+
+
+def check_abc339_f(case: Input) -> None:
+    (n,) = case.row(1)
+    in_range("N", n, 1, 1000)
+    for _ in range(n):
+        decimal_token(case, 1000)
+
+
 CHECKERS: dict[tuple[str, str], Callable[[Input], None]] = {
+    ("abc095", "c"): check_abc095_c,
+    ("abc192", "d"): check_abc192_d,
+    ("abc150", "c"): check_abc150_c,
+    ("abc302", "f"): check_abc302_f,
+    ("abc390", "c"): check_abc390_c,
+    ("abc146", "d"): check_abc146_d,
+    ("abc303", "e"): check_abc303_e,
+    ("abc241", "d"): check_abc241_d,
+    ("abc216", "d"): check_abc216_d,
+    ("abc339", "f"): check_abc339_f,
     ("abc300", "a"): check_abc300_a,
     ("abc320", "a"): check_abc320_a,
     ("abc355", "b"): check_abc355_b,
@@ -247,7 +440,11 @@ def read_metadata(path: Path) -> tuple[str, str]:
     require(re.fullmatch(r"[a-z0-9_-]+", contest) is not None, f"invalid contest: {contest!r}")
     require(re.fullmatch(r"[a-z0-9]+", problem) is not None, f"invalid problem: {problem!r}")
     require(path.parent == CORPUS / contest / problem, "contest/problem must match the directory")
-    url = f"https://atcoder.jp/contests/{contest}/tasks/{contest}_{problem}"
+    default_task = f"{contest}_{problem}"
+    expected_task = TASK_ID_EXCEPTIONS.get((contest, problem), default_task)
+    task = data.get("task_id", default_task)
+    require(task == expected_task, f"task_id must be {expected_task}")
+    url = f"https://atcoder.jp/contests/{contest}/tasks/{expected_task}"
     require(data["url"] == url, f"url must be {url}")
     require(bool(data["constraints"]), "constraints must summarize the official constraints")
 
@@ -493,6 +690,258 @@ def verify_abc400_d_boundaries(binary: Path, generator: Path) -> set[bytes]:
     return outputs
 
 
+@dataclass(frozen=True)
+class Batch1Profile:
+    name: str
+    source: str
+    rows: tuple[tuple[int, bytes], ...] = ()
+    seeds: tuple[int, ...] = (0, 42)
+    digits: tuple[int, int, int] | None = None
+    total: int | None = None
+    expected_error: str | None = None
+
+
+def fixed(source: str, **values: int) -> str:
+    """Pin existing scalar declarations; never silently miss a renamed field."""
+    for name, value in values.items():
+        pattern = rf"(?m)^(    {re.escape(name)} in )[^\n]+$"
+        source, count = re.subn(pattern, lambda m: f"{m[1]}{value}..={value}", source)
+        require(count == 1, f"expected one scalar declaration for {name}")
+    return source
+
+
+def batch1_profiles(problem: tuple[str, str], source: str) -> list[Batch1Profile]:
+    profiles = []
+    if problem == ("abc095", "c"):
+        corners = list(product((1, 5000), (1, 5000), (1, 5000), (1, 100_000), (1, 100_000)))
+        for values in [*corners, (100, 300, 200, 1, 100_000)]:
+            text = fixed(source, **dict(zip(("A", "B", "C", "X", "Y"), values)))
+            header = " ".join(map(str, values)).encode()
+            profiles.append(Batch1Profile("prices-" + header.decode().replace(" ", "-"), text, ((0, header),)))
+    elif problem == ("abc192", "d"):
+        for length, m, first, rest in ((1, 1, "1", "0"), (1, 10**18, "9", "9"),
+                                        (60, 1, "1", "0"), (60, 10**18, "9", "9")):
+            text = fixed(source, Length=length, M=m)
+            text = _fix_declarations(text, {'"123456789"': f'"{first}"', '"0123456789"': f'"{rest}"'})
+            value = (first + rest * (length - 1)).encode()
+            profiles.append(Batch1Profile(f"length-{length}-M-{m}", text, ((0, value), (1, str(m).encode()))))
+    elif problem == ("abc150", "c"):
+        for n, seeds in ((2, (0, 1, 7, 42)), (8, (0, 42))):
+            profiles.append(Batch1Profile(f"N-{n}", fixed(source, N=n), ((0, str(n).encode()),), seeds))
+    elif problem == ("abc302", "f"):
+        for name, n, m, length, total in (
+            ("minimum", 1, 2, "1", 1),
+            ("usual-maximum", 128, 128, "128", 16384),
+            ("variable-rows", 4, 7, "i", 10),
+            ("empty-set", 2, 2, "i-1", 1),
+            ("official-N-M", 200_000, 200_000, "1", 200_000),
+            ("official-total", 125_000, 200_000, "4", 500_000),
+        ):
+            text = fixed(source, N=n, M=m)
+            text = _fix_declarations(text, {"A[i] in 1..=M": f"A[i] in ({length})..=({length})"})
+            profiles.append(Batch1Profile(name, text, ((0, f"{n} {m}".encode()),), total=total))
+    elif problem == ("abc390", "c"):
+        for h, w, anchor, alphabet in (
+            (1, 1, 1, "#.?"), (1, 1000, 1000, "."), (1000, 1, 1, "?"),
+            (1000, 1000, 1_000_000, "#.?"), (2, 3, 1, "#.?"), (2, 3, 6, "#"),
+        ):
+            text = fixed(source, H=h, W=w, Anchor=anchor)
+            text = _fix_declarations(text, {'"#.?"': f'"{alphabet}"'})
+            profiles.append(Batch1Profile(f"{h}x{w}-anchor-{anchor}", text, ((0, f"{h} {w}".encode()),)))
+    elif problem == ("abc146", "d"):
+        for n, shape in ((2, "random"), (100_000, "random"), (64, "path"), (64, "star")):
+            text = fixed(source, N=n)
+            if shape != "random":
+                parent = "i" if shape == "path" else "1"
+                text = _fix_declarations(text, {"Parent[i] in 1..=i": f"Parent[i] in {parent}..={parent}"})
+            profiles.append(Batch1Profile(f"N-{n}-{shape}", text, ((0, str(n).encode()),)))
+    elif problem == ("abc303", "e"):
+        for stars, level, n in ((1, "2", 3), (1, "8", 9), (64, "8", 576),
+                                (3, "t+1", 12), (1, "199999", 200_000), (64, "3124", 200_000)):
+            text = fixed(source, Stars=stars)
+            text = _fix_declarations(text, {"Level[t] in 2..=8": f"Level[t] in ({level})..=({level})"})
+            profiles.append(Batch1Profile(f"stars-{stars}-level-{level}", text, ((0, str(n).encode()),)))
+    elif problem == ("abc241", "d"):
+        for name, q, kind, x, k in (
+            ("singleton-add", 1, "1", "1", "1"),
+            ("singleton-query2-empty", 1, "2", str(10**18), "5"),
+            ("singleton-query3-empty", 1, "3", "1", "1"),
+            ("interleaved", 6, "i%3+1", str(10**18), "5"),
+            ("official-Q", 200_000, None, None, None),
+            ("official-Q-all-query2", 200_000, "2", str(10**18), "5"),
+        ):
+            text = fixed(source, Q=q)
+            replacements = {}
+            for old, value, target in (("1..=3", kind, "Kind[i]"),
+                                       ("1..=1000000000000000000", x, "X[i]"),
+                                       ("1..=5", k, "K[i]")):
+                if value is not None:
+                    replacements[f"{target} in {old}"] = f"{target} in ({value})..=({value})"
+            text = _fix_declarations(text, replacements)
+            profiles.append(Batch1Profile(name, text, ((0, str(q).encode()),)))
+    elif problem == ("abc216", "d"):
+        for n, m in ((1, 2), (4096, 2), (4096, 256), (128, 256),
+                     (200_000, 2), (100_000, 200_000), (200_000, 200_000)):
+            text = fixed(source, N=n, M=m)
+            error = "total array capacity limit exceeded" if n == m == 200_000 else None
+            profiles.append(Batch1Profile(f"N-{n}-M-{m}", text, ((0, f"{n} {m}".encode()),), expected_error=error))
+    elif problem == ("abc339", "f"):
+        for n, digits, first, rest in ((1, 1, "1", "0"), (1, 1000, "1", "0"),
+                                        (1000, 1, None, None), (1000, 1000, "9", "9")):
+            text = fixed(source, N=n, Digits=digits)
+            if first is not None:
+                text = _fix_declarations(text, {'"123456789"': f'"{first}"', '"0123456789"': f'"{rest}"'})
+            profiles.append(Batch1Profile(f"N-{n}-digits-{digits}", text, ((0, str(n).encode()),), digits=(1, n + 1, digits)))
+    else:
+        raise ValueError(f"unknown batch 1 problem: {problem}")
+    return profiles
+
+
+def batch1_resources(problem: tuple[str, str], output: bytes) -> dict[str, int]:
+    """Bounds for these generators, separate from the official checkers."""
+    lines = output.splitlines()
+    integers = list(map(int, lines[0].split())) if problem != ("abc192", "d") else []
+    arrays = chars = generated = width = 0
+    if problem == ("abc095", "c"):
+        tokens, byte_bound, generated, work, input_work = 5, 29, 5, 5, 1
+    elif problem == ("abc192", "d"):
+        chars = len(lines[0])
+        tokens, byte_bound, generated, work, input_work = 2, chars + 21, 2, 2 * chars + 3, 2
+    elif problem == ("abc150", "c"):
+        n = integers[0]
+        arrays, generated, width = 2 * n, 2 * n + 1, n
+        tokens, byte_bound, work, input_work = 2 * n + 1, 4 * n + 2, 4 * n + 5, 3
+    elif problem == ("abc302", "f"):
+        n, m = integers
+        lengths = [int(row) for row in lines[1::2]]
+        total = sum(lengths)
+        arrays, generated, width = n + m, n + m + 2, m
+        tokens = n + total + 2
+        # An empty set still emits its own LF, unlike a nonempty row where
+        # the final LF replaces a token separator in the per-element bound.
+        byte_bound = len(str(n)) + len(str(m)) + 2 + (n + total) * (len(str(m)) + 1) + lengths.count(0)
+        work, input_work = 6 + 2 * (n + m), 2 + 4 * n + 2 * total
+    elif problem == ("abc390", "c"):
+        h, w = integers
+        chars, generated = h * w, 3
+        tokens, byte_bound = h + 2, len(str(h)) + len(str(w)) + 2 + h * (w + 1)
+        work, input_work = 5 + 2 * h + 3 * h * w, 2 + 2 * h
+    elif problem == ("abc146", "d"):
+        n = integers[0]
+        arrays, generated, width = 3 * n - 2, 3 * n - 1, n
+        tokens, byte_bound = 2 * n - 1, len(str(n)) + 1 + (n - 1) * (2 * len(str(n)) + 2)
+        work, input_work = 6 * n + 3, 3 * n - 1
+    elif problem == ("abc303", "e"):
+        n = integers[0]
+        # All normal and fixed profiles have at most 64 stars. The checker
+        # itself has no such restriction and does not use this bound.
+        arrays, generated, width = 4 * n + 126, 4 * n + 128, n
+        tokens, byte_bound = 2 * n - 1, len(str(n)) + 1 + (n - 1) * (2 * len(str(n)) + 2)
+        work, input_work = 7 * n + 329, 2 * n
+    elif problem == ("abc241", "d"):
+        q = integers[0]
+        arrays, generated = 3 * q, 3 * q + 1
+        tokens = 1 + sum(2 if row.split()[0] == b"1" else 3 for row in lines[1:])
+        byte_bound, work, input_work = len(str(q)) + 1 + 24 * q, 5 + 5 * q, 2 + 3 * q
+    elif problem == ("abc216", "d"):
+        n, m = integers
+        arrays, generated, width = 3 * n + 2 * m + 2, 3 * n + 2 * m + 4, 2 * n
+        tokens = 2 + m + 2 * n
+        byte_bound = len(str(n)) + len(str(m)) + 2 + m * (len(str(2 * n)) + 1) + 2 * n * (len(str(n)) + 1)
+        work, input_work = 13 + 6 * n + 4 * m, 2 + 4 * m + 4 * n
+    elif problem == ("abc339", "f"):
+        n, digits = integers[0], len(lines[1])
+        require(all(len(row) == digits for row in lines[1:]), "generator lost its common-width structure")
+        chars, generated = n * digits, 2
+        tokens, byte_bound = n + 1, len(str(n)) + 1 + n * (digits + 1)
+        work, input_work = 4 + n + 2 * n * digits, 2 + 2 * n
+    else:
+        raise ValueError(f"unknown batch 1 problem: {problem}")
+    bounds = {
+        "array_cells": arrays, "character_cells": chars, "generated_integers_upper": generated,
+        "output_tokens": tokens, "output_bytes_upper": byte_bound, "unique_width": width,
+        "unique_payload_bytes": 8 * width, "generate_work_upper": work, "input_work_upper": input_work,
+    }
+    for key in ("array_cells", "character_cells", "generated_integers_upper", "output_tokens", "unique_width"):
+        require(bounds[key] <= 1_000_000, f"{key} exceeds DSL limit")
+    for key in ("generate_work_upper", "input_work_upper"):
+        require(bounds[key] <= 10_000_000, f"{key} exceeds DSL work limit")
+    require(8 * width <= 16_000_000, "unique workspace exceeds limit")
+    require(len(output.split()) == tokens, "output token count disagrees with resource bound")
+    require(len(output) <= byte_bound <= 8 * 1024 * 1024, "output byte bound exceeds limit")
+    return bounds
+
+
+def verify_batch1_problem(binary: Path, path: Path) -> tuple[int, int]:
+    problem = (path.parent.parent.name, path.parent.name)
+    generator = path.with_name("generator.gen")
+    source = generator.read_text(encoding="utf-8")
+    records: list[dict] = []
+    label = "/".join(problem)
+    BATCH1_RESULTS[label] = {
+        "conditions": records,
+        "dsl_nonblank_lines": sum(bool(line.strip()) for line in source.splitlines()),
+        "dsl_physical_lines": len(source.splitlines()),
+        "dsl_bytes": len(source.encode()),
+        "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+    }
+    outputs = set()
+    profiles = [Batch1Profile("normal", source, seeds=SEEDS), *batch1_profiles(problem, source)]
+    BATCH1_RESULTS[label]["planned_conditions"] = sum(len(profile.seeds) for profile in profiles)
+    with tempfile.TemporaryDirectory(prefix="atcgen-batch1-") as directory:
+        probe = Path(directory) / "profile.gen"
+        for profile in profiles:
+            probe.write_text(profile.source, encoding="utf-8")
+            for seed in profile.seeds:
+                record = {"profile": profile.name, "seed": seed, "status": "failed",
+                          "source_sha256": hashlib.sha256(profile.source.encode()).hexdigest()}
+                records.append(record)
+                try:
+                    started = perf_counter()
+                    if profile.expected_error is not None:
+                        errors = []
+                        for _ in range(2):
+                            try:
+                                generate(binary, probe, seed)
+                            except ValueError as error:
+                                require(profile.expected_error in str(error), f"unexpected limit diagnostic: {error}")
+                                errors.append(str(error))
+                            else:
+                                raise ValueError("expected capacity limitation was not observed")
+                        require(errors[0] == errors[1], "same seed produced different failures")
+                        record.update(status="limited", reason=errors[0], probe_seconds=perf_counter() - started,
+                                      empty_stdout=True, repeatable_failure=True)
+                        continue
+                    first = generate(binary, probe, seed)
+                    record["generate_seconds"] = perf_counter() - started
+                    started = perf_counter()
+                    second = generate(binary, probe, seed)
+                    record["replay_seconds"] = perf_counter() - started
+                    require(first == second, "same seed produced different bytes")
+                    record["reproducible"] = True
+                    started = perf_counter()
+                    case = Input(first)
+                    CHECKERS[problem](case)
+                    case.finish()
+                    record["check_seconds"] = perf_counter() - started
+                    lines = first.splitlines()
+                    for index, expected in profile.rows:
+                        require(lines[index] == expected, f"profile row {index + 1} mismatch")
+                    if profile.digits is not None:
+                        start, stop, digits = profile.digits
+                        require(all(len(row) == digits for row in lines[start:stop]), "profile digit length mismatch")
+                    if profile.total is not None:
+                        require(sum(int(row) for row in lines[1::2]) == profile.total, "profile element total mismatch")
+                    record["resources"] = batch1_resources(problem, first)
+                    record.update(status="passed", output_bytes=len(first), output_tokens=len(first.split()),
+                                  output_sha256=hashlib.sha256(first).hexdigest())
+                    outputs.add(first)
+                except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+                    record["reason"] = str(error)
+                    raise ValueError(f"{profile.name}, seed {seed}: {error}") from error
+    return len(SEEDS), len(outputs)
+
+
 def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
     generator = path.with_name("generator.gen")
     require(generator.is_file(), "missing generator.gen")
@@ -500,6 +949,8 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
     checker = CHECKERS.get(problem)
     if checker is None:
         raise ValueError("missing constraint checker")
+    if problem in BATCH1:
+        return verify_batch1_problem(binary, path)
 
     outputs = set()
     boundaries = BOUNDARY_SEEDS.get(problem, {})
@@ -530,7 +981,34 @@ def verify_problem(binary: Path, path: Path) -> tuple[int, int]:
     return len(seeds), len(outputs)
 
 
-def main() -> int:
+def timing_summary(records: list[dict], field: str) -> dict[str, float | int]:
+    values = sorted(record[field] for record in records if record["status"] == "passed")
+    if not values:
+        return {"count": 0}
+    return {"count": len(values), "median_seconds": statistics.median(values),
+            "p95_seconds": values[math.ceil(0.95 * len(values)) - 1], "max_seconds": max(values)}
+
+
+def batch1_summary(result: dict) -> dict:
+    records = result["conditions"]
+    groups = {}
+    for name, selected in (("normal", [r for r in records if r["profile"] == "normal"]),
+                           ("boundary", [r for r in records if r["profile"] != "normal"])):
+        groups[name] = {
+            "counts": dict(Counter(record["status"] for record in selected)),
+            "generate": timing_summary(selected, "generate_seconds"),
+            "replay": timing_summary(selected, "replay_seconds"),
+            "check": timing_summary(selected, "check_seconds"),
+        }
+    groups["reproducible_conditions"] = sum(r.get("reproducible", False) for r in records)
+    return groups
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", type=Path, help="write batch 1 conditions, timings, and resource bounds as JSON")
+    args = parser.parse_args(argv)
+    BATCH1_RESULTS.clear()
     paths = sorted(CORPUS.rglob("problem.toml"))
     if not paths:
         print(f"FAIL: no problem.toml files under {CORPUS}")
@@ -583,6 +1061,16 @@ def main() -> int:
                 "abc300/a": ", 8 fixed profiles x 2 seeds, 14 fixed-header diversity seeds",
                 "abc385/e": ", 3 fixed sizes x 2 seeds (including N=300000)",
             }.get(label, "")
+            if label in BATCH1_RESULTS:
+                result = BATCH1_RESULTS[label]
+                result.update(status=status, coverage=coverage)
+                summary = batch1_summary(result)
+                result["summary"] = summary
+                counts = summary["boundary"]["counts"]
+                normal = summary["normal"]
+                boundaries = (f", fixed passed={counts.get('passed', 0)}, limited={counts.get('limited', 0)}"
+                              f", normal median generation={normal['generate']['median_seconds'] * 1000:.3f}ms"
+                              f", checker={normal['check']['median_seconds'] * 1000:.3f}ms")
             print(f"PASS {label}: {classification}, {seed_count} seeds{boundaries}, {distinct} distinct outputs")
 
     for generator in sorted(CORPUS.rglob("generator.gen")):
@@ -591,6 +1079,12 @@ def main() -> int:
             print(f"FAIL {generator.relative_to(CORPUS).as_posix()}: {failures[generator]}")
     counts = ", ".join(f"{status}={statuses[status]}" for status in STATUSES)
     print(f"Corpus: {len(paths)} registered, {counts}, verified={verified}, failures={len(failures)}")
+    if args.report is not None:
+        report = {"report_version": 1, "environment": {"python": platform.python_version(),
+                  "platform": platform.platform(), "binary_profile": "debug", "timeout_seconds": 30},
+                  "registered": len(paths), "verified": verified, "failures": len(failures),
+                  "statuses": dict(statuses), "batch1": BATCH1_RESULTS}
+        args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return int(bool(failures))
 
 

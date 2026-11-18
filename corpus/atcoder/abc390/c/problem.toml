@@ -1,0 +1,12 @@
+contest = "abc390"
+problem = "c"
+url = "https://atcoder.jp/contests/abc390/tasks/abc390_c"
+status = "supported"
+coverage = "representative"
+description = "H Wと幅Wの文字列H行。抽選したAnchorのセルを#へ固定し、他を# . ?から生成する。"
+constraints = [
+    "1 ≤ H,W ≤ 1000。各行は# . ?のみからなる長さWの文字列。",
+    "#が1つ以上存在する。黒マス全体を長方形にできる保証はない。",
+]
+limitations = ["アンカー方式は任意の黒を含む盤面を構成対象にできるが、盤面全体の一様分布は保証しない。"]
+missing_features = []

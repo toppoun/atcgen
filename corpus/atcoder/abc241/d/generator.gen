@@ -1,0 +1,24 @@
+generate {
+    Q in 1..=200000
+    Kind[Q]
+    X[Q]
+    K[Q]
+    for i in 1..=Q {
+        Kind[i] in 1..=3
+        X[i] in 1..=1000000000000000000
+        if Kind[i] != 1 {
+            K[i] in 1..=5
+        }
+    }
+}
+
+input {
+    Q
+    for i in 1..=Q {
+        if Kind[i] == 1 {
+            Kind[i] X[i]
+        } else {
+            Kind[i] X[i] K[i]
+        }
+    }
+}

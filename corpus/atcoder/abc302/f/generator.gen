@@ -1,0 +1,22 @@
+generate {
+    N in 1..=128
+    M in 2..=128
+    P[M]
+    A[N]
+    P in unique(1..=M)
+    for i in 1..=N {
+        A[i] in 1..=M
+    }
+}
+
+input {
+    N M
+    for i in 1..=N {
+        A[i]
+        row {
+            for j in 1..=A[i] {
+                P[j]
+            }
+        }
+    }
+}

@@ -1,0 +1,9 @@
+contest = "abc150"
+problem = "c"
+url = "https://atcoder.jp/contests/abc150/tasks/abc150_c"
+status = "supported"
+coverage = "representative"
+description = "N、長さNの順列P、長さNの順列Qを各1行。P,Qには別々の全域U1を使う。"
+constraints = ["2 ≤ N ≤ 8。P,Qはそれぞれ1..Nの順列。すべて整数。P=Qも有効。"]
+limitations = ["固定Nの2回のU1は独立な抽選モデル。Nまで含めた入力全体の一様分布や有限seedでの全順列到達は主張しない。"]
+missing_features = []

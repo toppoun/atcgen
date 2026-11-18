@@ -1,0 +1,12 @@
+contest = "abc241"
+problem = "d"
+url = "https://atcoder.jp/contests/abc241/tasks/abc241_d"
+status = "supported"
+coverage = "representative"
+description = "QとQ行のクエリ。種類を各位置で独立生成し、1 xまたは2 x k、3 x kを出力する。"
+constraints = [
+    "1 ≤ Q ≤ 200000、1 ≤ x ≤ 10^18、1 ≤ k ≤ 5。すべて整数。",
+    "問い合わせに十分な要素がなくても有効で、挿入がない操作列も許される。",
+]
+limitations = []
+missing_features = []

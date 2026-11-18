@@ -1,0 +1,22 @@
+generate {
+    H in 1..=1000
+    W in 1..=1000
+    Anchor in 1..=H*W
+    G[H] : string[W]
+    for i in 1..=H {
+        for j in 1..=W {
+            if (i-1)*W+j == Anchor {
+                G[i][j] = '#'
+            } else {
+                G[i][j] in "#.?"
+            }
+        }
+    }
+}
+
+input {
+    H W
+    for i in 1..=H {
+        G[i]
+    }
+}

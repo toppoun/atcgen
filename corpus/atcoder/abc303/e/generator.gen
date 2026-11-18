@@ -1,0 +1,34 @@
+generate {
+    Stars in 1..=64
+    Level[Stars]
+    Offset[Stars+1]
+    Offset[1] in 0..=0
+    for t in 1..=Stars {
+        Level[t] in 2..=8
+        Offset[t+1] in (Offset[t]+Level[t]+1)..=(Offset[t]+Level[t]+1)
+    }
+    N in Offset[Stars+1]..=Offset[Stars+1]
+    U[N-1]
+    V[N-1]
+    P[N]
+    Order[N-1]
+    P in unique(1..=N)
+    for t in 1..=Stars {
+        for j in 1..=Level[t] {
+            U[Offset[t]+j] in (Offset[t]+1)..=(Offset[t]+1)
+            V[Offset[t]+j] in (Offset[t]+j+1)..=(Offset[t]+j+1)
+        }
+        if t < Stars {
+            U[Offset[t]+Level[t]+1] in (Offset[t]+3)..=(Offset[t]+3)
+            V[Offset[t]+Level[t]+1] in (Offset[t+1]+2)..=(Offset[t+1]+2)
+        }
+    }
+    Order in unique(1..=N-1)
+}
+
+input {
+    N
+    for i in 1..N {
+        P[U[Order[i]]] P[V[Order[i]]]
+    }
+}

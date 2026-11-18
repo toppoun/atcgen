@@ -1,0 +1,14 @@
+generate {
+    Length in 1..=60
+    M in 1..=1000000000000000000
+    X : string[Length]
+    X[1] in "123456789"
+    for i in 2..=Length {
+        X[i] in "0123456789"
+    }
+}
+
+input {
+    X
+    M
+}

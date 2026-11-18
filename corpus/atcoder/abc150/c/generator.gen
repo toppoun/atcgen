@@ -1,0 +1,13 @@
+generate {
+    N in 2..=8
+    P[N]
+    Q[N]
+    P in unique(1..=N)
+    Q in unique(1..=N)
+}
+
+input {
+    N
+    P
+    Q
+}
