@@ -54,6 +54,7 @@ struct Generator {
     array_elements: usize,
     generated_integers: usize,
     char_cells: usize,
+    slot_count: usize,
 }
 
 pub(crate) fn generate(
@@ -63,10 +64,11 @@ pub(crate) fn generate(
 ) -> Result<Vec<Value>, Error> {
     let mut generator = Generator {
         rng: SplitMix64 { state: seed },
-        values: Vec::with_capacity(slot_count),
+        values: Vec::new(),
         array_elements: 0,
         generated_integers: 0,
         char_cells: 0,
+        slot_count,
     };
     let limited = statements.iter().any(|statement| match statement {
         BoundGenerateStmt::If { .. } | BoundGenerateStmt::InitUnique(_) => true,
@@ -83,6 +85,32 @@ pub(crate) fn generate(
 }
 
 impl Generator {
+    fn reserve_value(&mut self, position: Position) -> Result<(), Error> {
+        if self.values.len() == self.values.capacity() {
+            let needed = self.values.len().checked_add(1).ok_or_else(|| {
+                Error::at(position, "declaration values allocation size overflow")
+            })?;
+            // Grow with executed declarations, not an unchecked slot_count
+            // reservation before dynamic capacity/size validation.
+            let target = self
+                .values
+                .capacity()
+                .checked_mul(2)
+                .ok_or_else(|| Error::at(position, "declaration values allocation size overflow"))?
+                .max(4)
+                .min(self.slot_count)
+                .max(needed);
+            let additional = target - self.values.len();
+            crate::runtime::reserve_vec(
+                &mut self.values,
+                additional,
+                position,
+                "declaration values",
+            )?;
+        }
+        Ok(())
+    }
+
     fn execute(
         &mut self,
         statements: &[BoundGenerateStmt<'_>],
@@ -98,6 +126,7 @@ impl Generator {
             match statement {
                 BoundGenerateStmt::Scalar { name, range } => {
                     let (lower, width) = self.evaluation(loop_values).nonempty_range(range)?;
+                    self.reserve_value(name.position)?;
                     let value = self.sample(*name, lower, width)?;
                     self.values.push(Value::Scalar(value));
                 }
@@ -124,6 +153,14 @@ impl Generator {
                     let iterations = self.evaluation(loop_values).iterations(range, work)?;
                     if !body.is_empty() {
                         for index in iterations {
+                            if loop_values.len() == loop_values.capacity() {
+                                crate::runtime::reserve_vec(
+                                    loop_values,
+                                    1,
+                                    statement.position(),
+                                    "generation loop values",
+                                )?;
+                            }
                             loop_values.push(index);
                             self.execute(body, loop_values, work)?;
                             loop_values.pop();
@@ -171,8 +208,12 @@ impl Generator {
             )
             .with_expression(expr.source));
         }
+        let mut elements = Vec::new();
+        crate::runtime::reserve_vec(&mut elements, length, expr.position, "integer array")?;
+        elements.resize(length, None);
+        self.reserve_value(expr.position)?;
         self.array_elements += length;
-        self.values.push(Value::Array(vec![None; length]));
+        self.values.push(Value::Array(elements));
         Ok(())
     }
 
@@ -350,10 +391,14 @@ impl Generator {
                 format!("total character capacity limit exceeded ({MAX_CHAR_CELLS})"),
             ));
         }
+        let mut bytes = Vec::new();
+        crate::runtime::reserve_vec(&mut bytes, cells, length.position, "character cells")?;
+        bytes.resize(cells, 0);
+        self.reserve_value(length.position)?;
         self.char_cells += cells;
         let value = StringValue {
             width,
-            cells: vec![0; cells],
+            cells: bytes,
         };
         self.values.push(if count.is_some() {
             Value::StringArray(value)
@@ -888,6 +933,7 @@ mod unique_internal_tests {
                 array_elements: 0,
                 generated_integers: 0,
                 char_cells: 0,
+                slot_count: program.slot_count,
             };
             generator
                 .execute(prefix, &mut Vec::new(), &mut WorkBudget::new(true))

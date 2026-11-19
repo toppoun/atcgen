@@ -3,6 +3,7 @@ mod error;
 mod generator;
 mod output;
 mod parser;
+mod runtime;
 mod validation;
 
 pub use error::Error;
@@ -13,8 +14,11 @@ pub fn generate(source: &str, seed: u64) -> Result<String, Error> {
     let program = validation::validate(program)?;
     let values = generator::generate(&program.generate, program.slot_count, seed)?;
     let output = output::validate(&program.input, &values)?;
-    Ok(output.format())
+    output.format()
 }
+
+#[cfg(test)]
+mod faults;
 
 #[cfg(test)]
 mod tests;
